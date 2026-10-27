@@ -37,6 +37,9 @@ class OFTConfig:
     # Images are resized to this (W, H) at inference; StarVLA reads datasets.vla_data.obs_image_size.
     obs_image_size: Optional[Tuple[int, int]] = (224, 224)
     num_resnet_blocks: int = 2
+    # Storage dtype of the VLM weights. bf16 for inference / equivalence check;
+    # float32 for training (fp32 master weights, bf16 compute via autocast).
+    vlm_dtype: str = "bfloat16"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -156,7 +159,7 @@ class QwenOFT(nn.Module):
         self.vlm = Qwen3VLForConditionalGeneration.from_pretrained(
             cfg.base_vlm,
             attn_implementation=cfg.attn_implementation,
-            dtype=torch.bfloat16,
+            dtype=getattr(torch, cfg.vlm_dtype),
         )
         self.processor = AutoProcessor.from_pretrained(cfg.base_vlm)
         self.processor.tokenizer.padding_side = "left"

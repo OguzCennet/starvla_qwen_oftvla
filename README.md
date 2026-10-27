@@ -11,13 +11,19 @@ The action head is adapted from [openvla-oft](https://github.com/moojink/openvla
 ```
 oftvla/model.py               QwenOFT model (config, head, gather, loss, train/inference)
 tests/test_model_units.py     CPU unit tests (no VLM needed)
+MILESTONES.md                 progress log with evidence
 scripts/check_equivalence.py  GPU check: same outputs as StarVLA's Qwenvl_OFT
+oftvla/data.py                HDF5 LIBERO loader -> StarVLA-format samples
+oftvla/train.py               single-GPU training (StarVLA LIBERO recipe), resumable
+scripts/common.sh             paths shared by job scripts
+scripts/smoke_mini.sbatch     smoke test on the mini set (incl. resume)
+scripts/train_e3_A0.sbatch    full E3 A0 run; chain with scripts/submit_chain.sh
 ```
 
 ## Roadmap
 1. [x] model.py + unit tests
-2. [ ] equivalence vs StarVLA passes on helma
-3. [ ] data.py + train.py (overfit 10 episodes)
+2. [x] equivalence vs StarVLA passes on helma
+3. [ ] data.py + train.py (smoke test on mini set)
 4. [ ] policy.py + LIBERO eval (reproduce ~96 %)
 
 ## Run (helma, inside starvla.sif)
