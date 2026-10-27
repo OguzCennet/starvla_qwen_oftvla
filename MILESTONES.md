@@ -39,17 +39,22 @@ ALL PASS
 
 ---
 
-## ⬜ M3 — Data (`oftvla/data.py`)
+## ✅ M3 — Data (`oftvla/data.py`)
 **What:** HDF5 loader for our regenerated LIBERO data, producing StarVLA-format samples.
 **Rule (decided 2026-10-27): use nothing the original StarVLA LIBERO pipeline does not use.** Therefore:
 every step is a chunk start with end padding by repeating the last action; min_max normalisation of the 6 arm dims, gripper not normalised; PIL default resize 256→224; no augmentation; no proprio; actions as float16.
 Kept from our data definition (shared with `e3_A0`): demo selection by `e3_train_ids.csv`, status-ok demos only, A0 sentence, gripper 1 = open / 0 = close (the same convention StarVLA's LIBERO eval expects).
 **Guard:** the loader refuses to start if a training demo belongs to a test task (`--forbidden_ids e3_testdemo_ids.csv`). This changes no data; it only turns a silent split error into a crash.
 **Pass criterion:** `tests/test_data.py` passes (6 tests).
+**Evidence:** `12 passed in 14.12s` on helma (6 model + 6 data tests), commit a82deb5.
 
-## ⬜ M4 — Training (`oftvla/train.py`) smoke test
+## ✅ M4 — Training (`oftvla/train.py`) smoke test
 **What:** `scripts/smoke_mini.sbatch`: 300 steps on the mini set (5 tasks), interrupted once and resumed.
 **Pass criteria:** (a) the loss clearly falls (gradients reach the head and the VLM); (b) the resume continues at the saved step; (c) GPU memory fits; (d) the measured seconds per step tell us how long the full run takes.
+**Evidence (2026-10-27, H200):**
+- Job 1156180 (micro-batch 16): loss 0.85 → 0.13, `mse_score` 0.019 → 0.006 in 300 steps; 0.50 s per 16 samples; peak 99 GB; data loading 1–3 % of the time. The resume was *not* exercised: all 300 steps finished before the planned stop (planning error), and the `DONE` guard correctly skipped part 2.
+- Job 1156234 (micro-batch 32, stop after 36 s): `[resume] saved at step 36` → `[resume] from step 36`; loss continued 0.37 → 0.34 with no jump (optimizer state restored); final loss 0.085, `mse_score` 0.0038. 0.86 s per 32 samples (13 % faster per sample); peak 119 GB (nvidia-smi 128 GB of 141).
+**Decision:** full run uses 32 × 4 accumulation (same 128 per step) → ~3.45 s/step → 30K steps ≈ 29 h = 2 chained jobs.
 
 ## ⬜ M4b — Full run e3_A0 (`scripts/train_e3_A0.sbatch`)
 76 tasks, A0, StarVLA LIBERO recipe: 30K steps × 128 samples, 5K warmup, cosine down to 4 % of peak, AdamW (0.9, 0.95), lr VLM 1e-5 / head 1e-4, full fine-tuning, grad clip 1.0, seed 42.
