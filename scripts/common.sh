@@ -8,4 +8,5 @@ LABELS=$HOME/VLA_FT/DataSamples/Libero/Labels/switch_labels_v1.csv
 RUNS=/hnvme/workspace/y307bd13-vgv/runs/oftvla
 PYLIBS=$HOME/pylibs/h5py
 export HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false PYTHONNOUSERSITE=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # less memory fragmentation
 run_py() { apptainer exec --nv --env PYTHONPATH=$REPO:$PYLIBS $SIF python "$@"; }

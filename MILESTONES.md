@@ -54,7 +54,8 @@ Kept from our data definition (shared with `e3_A0`): demo selection by `e3_train
 **Evidence (2026-10-27, H200):**
 - Job 1156180 (micro-batch 16): loss 0.85 → 0.13, `mse_score` 0.019 → 0.006 in 300 steps; 0.50 s per 16 samples; peak 99 GB; data loading 1–3 % of the time. The resume was *not* exercised: all 300 steps finished before the planned stop (planning error), and the `DONE` guard correctly skipped part 2.
 - Job 1156234 (micro-batch 32, stop after 36 s): `[resume] saved at step 36` → `[resume] from step 36`; loss continued 0.37 → 0.34 with no jump (optimizer state restored); final loss 0.085, `mse_score` 0.0038. 0.86 s per 32 samples (13 % faster per sample); peak 119 GB (nvidia-smi 128 GB of 141).
-**Decision:** full run uses 32 × 4 accumulation (same 128 per step) → ~3.45 s/step → 30K steps ≈ 29 h = 2 chained jobs.
+**Decision (revised):** 32 × 4 ran out of memory in the full run (jobs 1156329–31, first step, 132 GB allocated). Cause: the smoke test used no accumulation, so gradients were freed before each forward pass; with accumulation, the 17.6 GB of fp32 gradients stay in memory during micro-batches 2–4. 99 GB (smoke, 16) + 17.6 GB ≈ 117 GB fits, 119 + 17.6 does not. Full run therefore uses 16 × 8 (same 128 per step) → ~4 s/step → 30K steps ≈ 33 h = 2 chained jobs.
+**Lesson:** a smoke test must use the exact configuration of the real run (here: accumulation), otherwise it does not test what it claims to.
 
 ## ⬜ M4b — Full run e3_A0 (`scripts/train_e3_A0.sbatch`)
 76 tasks, A0, StarVLA LIBERO recipe: 30K steps × 128 samples, 5K warmup, cosine down to 4 % of peak, AdamW (0.9, 0.95), lr VLM 1e-5 / head 1e-4, full fine-tuning, grad clip 1.0, seed 42.
