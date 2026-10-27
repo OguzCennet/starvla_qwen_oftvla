@@ -1,0 +1,7 @@
+# Versions match starvla.sif (torch 2.6.0+cu124, transformers 4.57.0)
+torch==2.6.0
+transformers==4.57.0
+numpy<2
+pillow
+omegaconf      # only for scripts/check_equivalence.py
+pytest
