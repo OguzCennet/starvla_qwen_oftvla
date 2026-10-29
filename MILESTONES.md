@@ -82,16 +82,49 @@ Resume across the job boundary was seamless (loss 0.029 → 0.028 around step 19
 ### Known confounds vs the OFT run `e3_A0`
 Different backbone and head **and**: no augmentation or proprio (OFT: both used); end padding (OFT: starts t ≤ T−8); min_max (OFT: q01/q99); 3.84M samples seen (OFT: 640K). A difference between the two runs cannot be attributed to the model alone.
 
-## ⬜ M5 — Policy + LIBERO evaluation
-**What:** `policy.py` (unnormalise, threshold the gripper) and `eval_libero.py`.
-**Pass criterion:** the full pipeline runs end to end on one task.
+## ✅ M4c — Held-out demo error (`oftvla/offline_eval.py`, job 1172087)
+Same L1 as training, at fixed weights, on 152 val demos (training tasks, never trained on) vs an equal-sized subset of training demos; every 4th sample start.
+| Step | Train L1 | Val L1 | Gap | Val gripper acc | Baseline (mean action) |
+|---|---|---|---|---|---|
+| 10K | 0.061 | 0.0855 | +0.025 | 0.956 | 0.234 |
+| 20K | 0.028 | 0.0846 | +0.056 | 0.957 | 0.234 |
+| 30K | 0.015 | 0.0842 | +0.069 | 0.958 | 0.234 |
+**Reading:** val error is ~3× below the no-learning baseline, but **flat after 10K** while train error falls 4×: the last 20K steps mostly fit the training demos themselves (memorisation), without making held-out demos worse. Caveat: human demos are multimodal, so val L1 has an irreducible floor and is only a weak proxy for closed-loop success.
 
-## ⬜ M6 — Reproduce the reference result
-**Pass criterion:** LIBERO average close to StarVLA's QwenOFT (96.6 %, ±1.5 for 500 trials).
-**Why:** Only after this may the repo be modified for experiments (learned queries, bidirectional query attention, language conditions).
+## ✅ M5 — Policy + LIBERO evaluation
+**What:** `oftvla/policy.py` (checkpoint → unnormalised 8×7 chunks, socket server in starvla.sif) + `oftvla/libero_client.py` (LIBERO loop in sym-openvla-oft.sif, StarVLA eval protocol: 10 settle steps, 180° rotation, bilinear 224, open-loop 8-step chunks, gripper > 0.5 → open, 400/520 step limits, env seed 7, training A0 text) + `scripts/eval_libero.sbatch`.
+**Pass criterion:** the pipeline runs end to end, and training-task success is in the range of the OFT baseline.
+**Evidence (job 1172088, 30K, sanity set 5 training tasks × 10 inits):** **48/50 = 96 %** (OFT `e3_A0` 80K: 48/50). LR1 soup+cheese 10/10, KS10 drawer+bowl 10/10, KS4 bottom/top drawer 8/10, LR2 butter 10/10, LR4 stack bowls 10/10. ~5–8 s per episode. Training A0 text = LIBERO text for all 5 tasks. Videos: `runs/oftvla/e3_A0/eval/videos_sanity_step30000/`.
+
+## ✅ M6 — Held-out tasks (E3 test)
+StarVLA's 96.6 % is on the four standard suites and is not comparable to our split; M6 = E3 test, 24 held-out tasks × 50 inits (`e3_test_ids.csv`).
+**Evidence (job 1175328, 30K, 3:07 h, 1200/1200 episodes, 2026-10-29):** **323/1200 = 26.9 %** vs OpenVLA-OFT A0 80K 231/1200 = 19.2 % (OpenVLA A1/A1 25.3 %). Per task 8 better / 5 worse / 11 equal, Wilcoxon p = 0.22, task-bootstrap 95 % CI of the difference [−5.4, +20.8] pts. Without the 2 leaked tasks: 24.7 % vs 16.1 %, 7/4/11, p = 0.11, CI [+1.4, +17.8].
+By group (Qwen / OpenVLA A0): T1 231/187 of 400, T2 38/1 of 500, L10 50/37, S2 4/4, two-goal 0/2. Striking: KS9 turn on the stove 50 vs 6; KS10 close the top drawer **1 vs 48**; SS2 book front 40 vs 11; **T2 SS3 white mug right of the caddy 35 vs 0** (first real recombination success); L10 soup+sauce 49 vs 32. Videos: `runs/oftvla/e3_A0/eval/videos_e3test_step30000/`.
+**Caveat:** the two models differ in backbone AND recipe (aug, proprio, normalisation, samples seen, eval protocol); one seed each.
 
 ---
 
-### Ideas parked for after M6
-- Learned query embeddings instead of 🔍 tokens.
-- Bidirectional attention among the queries (OpenVLA-OFT style): does 🔍₁ suffer from seeing less context?
+## ✅ M7 — Per-frame A0 / AS / MAS texts (`text_csv`) + smoke test (2026-10-29)
+**Question:** how does the language input (A0 sentence vs AS vs MAS sub-task block) change the learned policy?
+**Design (decided 2026-10-29):**
+- The sub-task block is an **input**, not a target: no text loss, no new head; model, loss and recipe unchanged (StarVLA QwenOFT).
+- Texts are used exactly as built in `~/VLA_FT/DataSamples/Libero/A0ASMAS/` (label dictionary v2.3, frozen): `text_A0` = `Instruction: <sentence>`; `text_AS` / `text_MAS` = `text_A0` + newline + 4-line block (Achieved Goals / Current Goal / In-Progress Step / Next Step). The A0 prompt is a word-for-word prefix of the AS/MAS prompts, so an A0 vs AS/MAS difference can only come from the block.
+- Teacher forcing: the loader gives the gold text of each frame; the model never decides which step it is in.
+- Demo set: the v5 demos (step1 drops removed): 3,565 of the 3,637 `e3_train_ids.csv` demos. All three runs use the same demos, statistics, seed and code; only the text column differs.
+- Evaluation (planned): offline on the held-out E3 test demos (`test.csv`, 1,158 demos) with the same text column; mean L1 over all frames + L1 split by distance to the nearest MAS step change. No closed-loop rollouts for this comparison.
+**Code:** `data.py` optional `text_csv` (column `text_<setup>`; demos = split ∩ CSV; crash if CSV frames ≠ HDF5 frames; old `labels_csv` path unchanged); `train.py --text_csv`; `scripts/train_e3_text.sbatch`, `scripts/smoke_text.sbatch`, `submit_chain.sh` NAME + args; `scripts/show_prompt.py`. Commit 4e83f7a.
+**Exact prompt** (`show_prompt.py`, real processor): one user turn, no system message:
+`<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|><|vision_start|><|image_pad|><|vision_end|>{text} Please predict the next 8 robot actions: <action>🔍×8<action>.<|im_end|>\n<|im_start|>assistant\n`.
+Tokens at L10T01 demo_31 raw 180: A0 177, AS 225, MAS 236 (images 2 × 64). StarVLA quirk kept: " Please predict ..." follows the last block line after a space.
+**Tests:** `22 passed in 5.39s` (helma, container): 18 old + 4 new (per-frame text; A0/AS/MAS give identical starts, images, actions, stats; missing frame raises; bad setup raises). Negative control: breaking the per-frame lookup makes 2 new tests fail.
+**Smoke (job 1177748, MAS = longest prompts, exact run config 16 × 8, 14 workers, 40 steps, stopped after 0.03 h and resumed):**
+- `[data] setup=MAS demos=3565 samples=565397 texts=289 skipped_not_in_text_csv=72` (289 = train texts; the 360 in the build report counts train + test)
+- loss 0.377 → 0.239; mse_score 0.0128 / 0.0134; data loading < 1 % of step time
+- peak memory **116.2 GB** (torch; nvidia-smi 120.6 GB) vs 105.7 GB for A0 — fits, ~20 GB headroom; flat from step 5 (batches are padded to their longest prompt)
+- **4.5 s/step** (A0: 3.9) → 30K steps ≈ 38 h = 2 chained jobs
+- resume: saved at step 23 → resumed at 23, loss continuous (0.280 → 0.276); `DONE`, resume state removed
+**Lesson:** the smoke job's log folder must exist before `sbatch` (first submission 1177725 started without it and lost its log; cancelled and resubmitted).
+**Known limitations of v2.3 (not changed):** AS/MAS differ also in verb form (plain vs -ing) and in the Achieved-Goals state lines; MAS put steps are often shorter than the 8-action chunk.
+
+## ⏳ M8 — Full runs e3v5_A0 / e3v5_AS / e3v5_MAS (submitted 2026-10-29)
+`bash scripts/submit_chain.sh scripts/train_e3_text.sbatch 3 e3v5_<SETUP> <SETUP>`, commit 9616201. Jobs: A0 1178169–71, AS 1178172–74, MAS 1178175–77.
