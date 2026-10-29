@@ -8,7 +8,8 @@
 # Smoke test for train_e3_text.sbatch with the EXACT run configuration (full v5 train set, 16 x 8
 # accumulation, same workers), only shorter: 40 steps, interrupted after MAX_H hours and resumed.
 # Checks: data loads (demo/sample counts), loss falls, peak GPU memory with the long MAS prompts, resume.
-# Usage: sbatch --job-name=smoke_MAS scripts/smoke_text.sbatch MAS [MAX_H]
+# Usage: mkdir -p /hnvme/workspace/y307bd13-vgv/runs/oftvla/smoke_MAS   (FIRST: Slurm needs the log folder at job start)
+#        sbatch --job-name=smoke_MAS scripts/smoke_text.sbatch MAS [MAX_H]
 source $HOME/VLA_FT/starvla_qwen_oftvla/scripts/common.sh
 cd $REPO
 SETUP=${1:?usage: sbatch --job-name=NAME smoke_text.sbatch A0|AS|MAS [MAX_H]}; MAX_H=${2:-0.03}
