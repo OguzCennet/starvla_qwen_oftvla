@@ -94,3 +94,88 @@ def test_only_a0_supported(tmp_path):
     p = _make_dataset(tmp_path)
     with pytest.raises(ValueError):
         LiberoLangDataset(str(p / "v1"), [str(p / "train.csv")], str(p / "labels.csv"), setup="A1")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Per-frame texts from the A0ASMAS CSV (text_csv)
+# ──────────────────────────────────────────────────────────────────────
+def _write_text_csv(path, rows):
+    cols = ["split", "suite", "task_id", "task", "demo", "t", "raw_step", "text_A0", "text_AS", "text_MAS"]
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c, "") for c in cols})
+
+
+def _frame_rows(suite, task, demo, length, as_switch, mas_switches):
+    """AS: 2 steps switching at as_switch; MAS: one step index per switch. Multi-line texts as in the CSV."""
+    a0 = f"Instruction: do {task}"
+    rows = []
+    for t in range(length):
+        k_as = int(t >= as_switch)
+        k_mas = sum(t >= s for s in mas_switches)
+        rows.append(dict(split="train", suite=suite, task_id="T1", task=task, demo=demo, t=t, raw_step=t,
+                         text_A0=a0, text_AS=f"{a0}\nIn-Progress Step: as{k_as}",
+                         text_MAS=f"{a0}\nIn-Progress Step: mas{k_mas}"))
+    return rows
+
+
+def _make_text_dataset(tmp_path):
+    """train_task demo_0 (12 steps) is in the text CSV; demo_1 (13 steps) is not (a v5-dropped demo)."""
+    p = _make_dataset(tmp_path)
+    with open(p / "train_both.csv", "w", newline="") as f:  # split file with both demos (status ignored here)
+        w = csv.writer(f)
+        w.writerow(["suite", "task", "demo"])
+        w.writerow(["libero_90", "train_task", "demo_0"])
+        w.writerow(["libero_90", "train_task", "demo_1"])
+    _write_text_csv(p / "a0asmas.csv", _frame_rows("libero_90", "train_task", "demo_0", 12, 5, [3, 5, 9]))
+    return p
+
+
+def _text_ds(p, setup, **kw):
+    return LiberoLangDataset(str(p / "v1"), [str(p / "train_both.csv")], None, setup=setup,
+                             text_csv=str(p / "a0asmas.csv"), **kw)
+
+
+def test_text_csv_per_frame_text(tmp_path):
+    p = _make_text_dataset(tmp_path)
+    ds = _text_ds(p, "MAS")
+    assert len(ds.demos) == 1 and ds.n_skipped_not_in_text == 1  # demo_1 not in the CSV -> skipped
+    assert len(ds) == 12
+    langs = [ds[t]["lang"] for t in range(12)]
+    expected = [f"mas{sum(t >= s for s in (3, 5, 9))}" for t in range(12)]
+    assert [s.split("In-Progress Step: ")[1] for s in langs] == expected
+    assert langs[0].startswith("Instruction: do train_task\n")  # instruction line kept, real newline
+    assert len(ds.texts) == 4  # distinct texts stored once
+
+
+def test_text_csv_same_samples_for_all_setups(tmp_path):
+    """Fairness: A0 / AS / MAS see identical demos, starts, images and actions; only the text differs."""
+    p = _make_text_dataset(tmp_path)
+    dss = {s: _text_ds(p, s) for s in ("A0", "AS", "MAS")}
+    ref = dss["A0"]
+    assert len({d["text_idx"].size for d in ref.demos}) == 1
+    for name, ds in dss.items():
+        assert ds.starts == ref.starts and [d["key"] for d in ds.demos] == [d["key"] for d in ref.demos]
+        assert ds.stats == ref.stats
+        for i in (0, 4, 5, 11):
+            a, b = ds[i], ref[i]
+            assert np.array_equal(a["action"], b["action"])
+            assert all(np.array_equal(np.asarray(x), np.asarray(y)) for x, y in zip(a["image"], b["image"]))
+    assert {dss["A0"][t]["lang"] for t in range(12)} == {"Instruction: do train_task"}
+    assert dss["AS"][4]["lang"].endswith("as0") and dss["AS"][5]["lang"].endswith("as1")
+
+
+def test_text_csv_missing_frame_raises(tmp_path):
+    p = _make_text_dataset(tmp_path)
+    rows = _frame_rows("libero_90", "train_task", "demo_0", 12, 5, [3, 5, 9])
+    _write_text_csv(p / "a0asmas.csv", rows[:7] + rows[8:])  # frame 7 missing
+    with pytest.raises(ValueError, match="HDF5 demo has 12 steps"):
+        _text_ds(p, "AS")
+
+
+def test_text_csv_bad_setup_raises(tmp_path):
+    p = _make_text_dataset(tmp_path)
+    with pytest.raises(ValueError):
+        _text_ds(p, "A1")

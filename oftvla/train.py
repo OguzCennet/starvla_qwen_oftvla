@@ -34,8 +34,9 @@ def parse_args():
     p.add_argument("--data_root", required=True)
     p.add_argument("--train_ids", nargs="+", required=True)
     p.add_argument("--forbidden_ids", nargs="*", default=[], help="split files whose TASKS must not be trained on")
-    p.add_argument("--labels_csv", required=True)
-    p.add_argument("--setup", default="A0")
+    p.add_argument("--labels_csv", default=None, help="switch_labels_v1.csv: one A0 sentence per demo")
+    p.add_argument("--text_csv", default=None, help="A0ASMAS train.csv: one text per frame (overrides labels_csv)")
+    p.add_argument("--setup", default="A0", help="A0 (labels_csv or text_csv), AS or MAS (text_csv only)")
     p.add_argument("--num_workers", type=int, default=8)
     # model
     p.add_argument("--base_vlm", required=True)
@@ -57,7 +58,10 @@ def parse_args():
     p.add_argument("--save_every", type=int, default=10000)
     p.add_argument("--resume_every", type=int, default=2000)
     p.add_argument("--max_hours", type=float, default=1e9, help="save resume state and exit after this wall time")
-    return p.parse_args()
+    args = p.parse_args()
+    if args.labels_csv is None and args.text_csv is None:
+        p.error("one of --labels_csv / --text_csv is required")
+    return args
 
 
 def set_seed(seed: int):
@@ -102,11 +106,15 @@ def main():
     # ---- data (stats fixed at the first start, reused on resume) ----
     stats = load_stats(stats_path) if os.path.exists(stats_path) else None
     ds = LiberoLangDataset(args.data_root, [os.path.expanduser(x) for x in args.train_ids],
-                           os.path.expanduser(args.labels_csv), args.setup, stats=stats,
-                           forbidden_id_files=[os.path.expanduser(x) for x in args.forbidden_ids])
+                           args.labels_csv and os.path.expanduser(args.labels_csv), args.setup, stats=stats,
+                           forbidden_id_files=[os.path.expanduser(x) for x in args.forbidden_ids],
+                           text_csv=args.text_csv and os.path.expanduser(args.text_csv))
     if stats is None:
         save_stats(ds.stats, stats_path)
-    print(f"[data] demos={len(ds.demos)} samples={len(ds)} skipped_not_ok={ds.n_skipped_not_ok}", flush=True)
+    print(f"[data] setup={args.setup} demos={len(ds.demos)} samples={len(ds)} texts={len(ds.texts)} "
+          f"skipped_not_ok={ds.n_skipped_not_ok} skipped_not_in_text_csv={ds.n_skipped_not_in_text}", flush=True)
+    longest = max(ds.texts, key=len)
+    print(f"[data] longest text ({len(longest)} chars):\n{longest}", flush=True)
     gen = torch.Generator().manual_seed(args.seed)
     loader = DataLoader(ds, batch_size=args.micro_batch, shuffle=True, drop_last=True, generator=gen,
                         num_workers=args.num_workers, collate_fn=identity_collate,
