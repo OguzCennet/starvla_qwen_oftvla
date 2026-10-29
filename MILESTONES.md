@@ -57,8 +57,19 @@ Kept from our data definition (shared with `e3_A0`): demo selection by `e3_train
 **Decision (revised):** 32 × 4 ran out of memory in the full run (jobs 1156329–31, first step, 132 GB allocated). Cause: the smoke test used no accumulation, so gradients were freed before each forward pass; with accumulation, the 17.6 GB of fp32 gradients stay in memory during micro-batches 2–4. 99 GB (smoke, 16) + 17.6 GB ≈ 117 GB fits, 119 + 17.6 does not. Full run therefore uses 16 × 8 (same 128 per step) → ~4 s/step → 30K steps ≈ 33 h = 2 chained jobs.
 **Lesson:** a smoke test must use the exact configuration of the real run (here: accumulation), otherwise it does not test what it claims to.
 
-## ⬜ M4b — Full run e3_A0 (`scripts/train_e3_A0.sbatch`)
+## ✅ M4b — Full run e3_A0 (`scripts/train_e3_A0.sbatch`)
 76 tasks, A0, StarVLA LIBERO recipe: 30K steps × 128 samples, 5K warmup, cosine down to 4 % of peak, AdamW (0.9, 0.95), lr VLM 1e-5 / head 1e-4, full fine-tuning, grad clip 1.0, seed 42.
+**Evidence (finished 2026-10-29 05:04):** jobs 1156388 (23:02 h, stopped at step 19,870 and saved resume state) → 1156389 (resumed at 19,870, 11:09 h, finished 30,000, wrote `DONE`) → 1156390 (exited after 16 s: `DONE` exists). Commit f1685e9. 3,636 demos, 581,668 samples; no errors, NaN or OOM; memory constant 105.7 GB; ~3.9 s/step.
+Weights: `runs/oftvla/e3_A0/steps_{10000,20000,30000}_model.pt` (9.8 GB each, bf16).
+| Steps | Train loss (L1) | mse_score | Grad norm | LR (VLM) |
+|---|---|---|---|---|
+| 0–2K | 0.164 | 0.0076 | 15.6 | warmup |
+| 4–6K | 0.091 | 0.0049 | 9.9 | 1.0e-5 (peak) |
+| 10–12K | 0.059 | 0.0037 | 8.6 | 8.3e-6 |
+| 18–20K | 0.031 | 0.0023 | 8.3 | 3.7e-6 |
+| 28–30K | 0.016 | 0.0012 | 3.7 | 4e-7 |
+Resume across the job boundary was seamless (loss 0.029 → 0.028 around step 19,870).
+**Caveat:** both numbers are measured on *training* batches. They show the model fits the training data; they say nothing about generalisation or task success.
 
 ### Recipe fidelity: unavoidable differences from StarVLA (none change the recipe)
 | StarVLA | Here | Why |
