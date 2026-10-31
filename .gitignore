@@ -6,3 +6,4 @@ outputs/
 wandb/
 *.log
 *.sif
+MUJOCO_LOG.TXT
