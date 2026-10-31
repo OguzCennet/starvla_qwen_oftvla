@@ -126,5 +126,21 @@ Tokens at L10T01 demo_31 raw 180: A0 177, AS 225, MAS 236 (images 2 × 64). Star
 **Lesson:** the smoke job's log folder must exist before `sbatch` (first submission 1177725 started without it and lost its log; cancelled and resubmitted).
 **Known limitations of v2.3 (not changed):** AS/MAS differ also in verb form (plain vs -ing) and in the Achieved-Goals state lines; MAS put steps are often shorter than the 8-action chunk.
 
-## ⏳ M8 — Full runs e3v5_A0 / e3v5_AS / e3v5_MAS (submitted 2026-10-29)
-`bash scripts/submit_chain.sh scripts/train_e3_text.sbatch 3 e3v5_<SETUP> <SETUP>`, commit 9616201. Jobs: A0 1178169–71, AS 1178172–74, MAS 1178175–77.
+## ✅ M8 — Full runs e3v5_A0 / e3v5_AS / e3v5_MAS (2026-10-29 → 2026-10-31)
+1 H200 per run, 16 × 8 = 128 per step, 30K steps, same recipe as M4b; only the text column differs. `bash scripts/submit_chain.sh scripts/train_e3_text.sbatch 3 e3v5_<SETUP> <SETUP>`.
+| Run | Jobs (part 1 → part 2 → no-op) | Resume at | s/step | Peak mem | Finished |
+|---|---|---|---|---|---|
+| e3v5_A0 | 1178169 → 1178170 → 1178171 | 20,364 | 3.91 | 105.9 GB | 31 Oct 05:01 |
+| e3v5_AS | 1178172 → 1178173 → 1178174 | 16,675 | 4.79 | 114.9 GB | 31 Oct 12:11 |
+| e3v5_MAS | 1178175 → 1178176 → 1178177 | 17,233 | 4.71 | 116.2 GB | 31 Oct 11:52 |
+- All: 3,565 demos, 565,397 samples, 72 v5-dropped demos skipped; distinct training texts A0 68 / AS 146 / MAS 289. 3,000 logged steps each, no duplicates, no NaN/OOM; loss continuous across the job boundary; `DONE`; weights `steps_{10000,20000,30000}_model.pt`; third job exited on `DONE`.
+- Code: part 1 ran at 9616201 (+ uncommitted MILESTONES.md), part 2 at 95849d8 (clean). `oftvla/train.py`, `data.py`, `model.py` were last modified before submission (29 Oct 17:44 / 27 Oct) and are byte-identical to 4e83f7a → both parts ran the same training code. `train.csv` md5 a7051944… in every job.
+- Training loss (mean per window; train batches only, NOT a result):
+| Window | e3_A0 (old) | e3v5_A0 | e3v5_AS | e3v5_MAS |
+|---|---|---|---|---|
+| 0–2K | 0.163 | 0.163 | 0.160 | 0.153 |
+| 4–6K | 0.091 | 0.090 | 0.090 | 0.088 |
+| 10–12K | 0.059 | 0.060 | 0.061 | 0.060 |
+| 18–20K | 0.031 | 0.031 | 0.032 | 0.033 |
+| 28–30K | 0.016 | 0.016 | 0.017 | 0.017 |
+**Reading:** the block lowers the training loss only early (MAS 0.153 vs A0 0.163 in the first 2K steps); from ~5K steps all three fit the training demos equally well. Whether the text changes behaviour on held-out demos needs the test evaluation (M9).
