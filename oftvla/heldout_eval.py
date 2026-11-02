@@ -12,11 +12,13 @@ Outputs (in RUN/heldout_eval/):
 Distances to step changes are NOT computed here; the analysis joins gold_test.csv by (suite, task, demo, t).
 
 Usage: python -m oftvla.heldout_eval --run_dir RUN --ckpts 30000 20000 10000 --data_root ... \
-           --test_ids e3_testdemo_ids.csv --text_csv A0ASMAS/test.csv --base_vlm ...
+           --test_ids e3_testdemo_ids.csv [--text_csv A0ASMAS/test.csv] --base_vlm ...
+       Without --text_csv: test.csv next to the run's training text_csv (args.json).
 """
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import time
@@ -37,7 +39,8 @@ def parse_args():
     p.add_argument("--ckpts", type=int, nargs="+", required=True)
     p.add_argument("--data_root", required=True)
     p.add_argument("--test_ids", required=True, help="split file of the held-out test demos")
-    p.add_argument("--text_csv", required=True, help="A0ASMAS test.csv")
+    p.add_argument("--text_csv", default=None,
+                   help="test CSV; default = test.csv in the folder of the run's training text_csv (args.json)")
     p.add_argument("--setup", default=None, help="text column; default = the run's training setup (args.json)")
     p.add_argument("--base_vlm", required=True)
     p.add_argument("--stride", type=int, default=1, help="evaluate every k-th frame (1 = all)")
@@ -69,6 +72,26 @@ def resolve_setup(run_dir: str, setup) -> str:
     return setup
 
 
+def resolve_text_csv(run_dir: str, text_csv) -> str:
+    """The test texts must come from the same folder as the training texts, unless given explicitly."""
+    if text_csv is not None:
+        return text_csv
+    with open(os.path.join(run_dir, "args.json")) as f:
+        train_csv = json.load(f).get("text_csv")
+    if not train_csv:
+        raise ValueError(f"{run_dir}/args.json has no text_csv (run trained without per-frame texts); "
+                         "pass --text_csv explicitly")
+    return os.path.join(os.path.dirname(train_csv), "test.csv")
+
+
+def md5_of(path: str) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 @torch.inference_mode()
 def predict(model: QwenOFT, ds, idx, batch_size: int, num_workers: int):
     loader = DataLoader(Subset(ds, idx), batch_size=batch_size, shuffle=False,
@@ -83,8 +106,10 @@ def predict(model: QwenOFT, ds, idx, batch_size: int, num_workers: int):
 def main():
     args = parse_args()
     setup = resolve_setup(args.run_dir, args.setup)
+    text_csv = resolve_text_csv(args.run_dir, args.text_csv)
+    print(f"[text_csv] {text_csv} md5={md5_of(text_csv)}", flush=True)
     stats = load_stats(os.path.join(args.run_dir, "dataset_statistics.json"))  # training statistics
-    ds = LiberoLangDataset(args.data_root, [args.test_ids], None, setup=setup, stats=stats, text_csv=args.text_csv)
+    ds = LiberoLangDataset(args.data_root, [args.test_ids], None, setup=setup, stats=stats, text_csv=text_csv)
     idx = list(range(0, len(ds), args.stride))
     keys = [(*ds.demos[di]["key"], t) for di, t in (ds.starts[i] for i in idx)]
     print(f"[data] setup={setup} test demos={len(ds.demos)} frames={len(ds)} evaluated={len(idx)} "
