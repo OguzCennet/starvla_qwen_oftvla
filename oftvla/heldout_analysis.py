@@ -29,7 +29,7 @@ NEAR = 8  # raw steps = one action chunk
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--runs", nargs="+", required=True, help="run dirs; the name after the last '_' is the label")
+    p.add_argument("--runs", nargs="+", required=True, help="run dirs; the name after the first '_' is the label")
     p.add_argument("--step", type=int, default=30000)
     p.add_argument("--gold", required=True, help="gold_test.csv (dist_MAS, cur_MAS, task_id)")
     p.add_argument("--out_dir", required=True)
@@ -38,11 +38,17 @@ def parse_args():
 
 
 def run_label(run_dir: str) -> str:
-    return os.path.basename(os.path.normpath(run_dir)).split("_")[-1]
+    """Folder name after the FIRST '_' (e3v5_AS_noAG -> AS_noAG); the whole name if there is no '_'."""
+    name = os.path.basename(os.path.normpath(run_dir))
+    return name.split("_", 1)[1] if "_" in name else name
 
 
 def load_runs(run_dirs, step: int) -> pd.DataFrame:
-    """Long table: one row per (run, frame). Refuses runs that were scored on different frames."""
+    """Long table: one row per (run, frame). Refuses duplicate labels and runs scored on different frames."""
+    labels = [run_label(d) for d in run_dirs]
+    dups = sorted({l for l in labels if labels.count(l) > 1})
+    if dups:
+        raise ValueError(f"duplicate run labels {dups} from {list(run_dirs)}")
     frames, ref = [], None
     for d in run_dirs:
         f = pd.read_csv(os.path.join(d, "heldout_eval", f"step{step}_frames.csv"))

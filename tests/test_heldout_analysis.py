@@ -3,11 +3,13 @@
 Run:  python -m pytest -q tests/test_heldout_analysis.py
 """
 
+import shutil
+
 import numpy as np
 import pandas as pd
 import pytest
 
-from oftvla.heldout_analysis import add_gold, compare, load_runs, paired_stats
+from oftvla.heldout_analysis import add_gold, compare, load_runs, paired_stats, run_label
 
 KEYS = ["suite", "task", "demo", "t"]
 
@@ -69,3 +71,16 @@ def test_paired_stats_direction():
     assert (s["b_better"], s["b_worse"], s["equal"]) == (1, 1, 1)
     g = paired_stats(np.array([0.8, 0.8]), np.array([0.9, 0.7]), n_boot=100, higher_is_better=True)
     assert (g["b_better"], g["b_worse"]) == (1, 1)
+
+
+def test_run_label_after_first_underscore():
+    names = ["e3v5_A0", "e3v5_AS", "e3v5_MAS", "e3v5_AS_noAG", "e3v5_MAS_noAG", "e3v5_A0_seed2"]
+    assert [run_label(f"/runs/oftvla/{n}/") for n in names] == ["A0", "AS", "MAS", "AS_noAG", "MAS_noAG", "A0_seed2"]
+
+
+def test_duplicate_label_refused(tmp_path):
+    runs, gold = _make(tmp_path)
+    other = tmp_path / "other" / "e3_MAS"                 # different folder, same label "MAS"
+    shutil.copytree(runs[1], other)
+    with pytest.raises(ValueError, match="duplicate run labels"):
+        load_runs(runs + [str(other)], 30000)
