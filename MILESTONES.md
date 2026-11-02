@@ -144,3 +144,36 @@ Tokens at L10T01 demo_31 raw 180: A0 177, AS 225, MAS 236 (images 2 × 64). Star
 | 18–20K | 0.031 | 0.031 | 0.032 | 0.033 |
 | 28–30K | 0.016 | 0.016 | 0.017 | 0.017 |
 **Reading:** the block lowers the training loss only early (MAS 0.153 vs A0 0.163 in the first 2K steps); from ~5K steps all three fit the training demos equally well. Whether the text changes behaviour on held-out demos needs the test evaluation (M9).
+
+## ✅ M9 — Held-out test evaluation of e3v5_A0 / AS / MAS (2026-10-31)
+**What:** offline, teacher-forced action error on the held-out E3 test demos (`oftvla/heldout_eval.py`, `scripts/heldout_eval.sbatch`; analysis `oftvla/heldout_analysis.py`). Every frame of the 1,158 test demos (186,874 frames), checkpoints 10K / 20K / 30K, each run with the text column it was trained with. Jobs 1190433–1190435.
+**Frame-weighted L1 at 30K:** A0 **0.1226** / AS **0.1201** / MAS **0.1188** (mean-action baseline 0.238); flat from 10K.
+**Paired over the 24 test tasks:**
+- MAS vs A0: L1 −4.3 % (16 better / 8 worse, p = 0.015); near MAS step changes −8.3 % (p = 0.008); gripper agreement +0.8 pt (20 / 2, p = 1.6e-5).
+- AS vs A0: not significant.
+- Without the 2 leaked tasks: MAS vs A0 −2.6 % (p = 0.05), gripper 19 / 2.
+**Caveats:** one seed per setup (run-to-run noise measured in M10); offline teacher-forced L1, not closed-loop success; near/far uses the v5 step boundaries.
+
+## ⏳ M10 — Runs e3v5_AS_noAG / e3v5_MAS_noAG / e3v5_A0_seed2 (started 2026-11-01)
+**Question:** (1) do AS / MAS need the "Achieved Goals" lines? (2) how large is run-to-run noise (seed) compared with the M9 differences?
+**Design:** identical to the e3v5 runs (M8: same recipe, demos, statistics, code, 1 H200, 16 × 8, 30K steps) except one factor each. Brief: `docs/briefs/noag_runs.md`.
+- Texts without Achieved Goals: `~/VLA_FT/DataSamples/Libero/A0ASMAS_noAG/` (`make_noag.py`, `README.md`, `report.txt`). The block (heading + state lines) removed from `text_AS` / `text_MAS`; everything else identical, checks asserted. Each AS / MAS text is now 4 lines: Instruction / Current Goal / In-Progress Step / Next Step. Removing the block merged **no** texts (train A0 68 / AS 146 / MAS 289, as before): the Achieved-Goals lines were redundant given the other lines. Prompt tokens at L10T01 demo_31 raw 180: A0 177, AS 216 (was 225), MAS 217 (was 236).
+- `scripts/train_e3_text.sbatch SETUP [TEXTDIR] [SEED]` (defaults `$TEXTS`, 42 → unchanged behaviour). Commit 6e3f335.
+- e3v5_A0_seed2 = e3v5_A0 with seed 43: measures run-to-run noise.
+
+| Run | Setup | Texts (train.csv md5) | Seed | Jobs | Node (part 1) | Peak mem (e3v5) | s/step |
+|---|---|---|---|---|---|---|---|
+| e3v5_AS_noAG | AS | A0ASMAS_noAG (6e194331…) | 42 | 1194245 → 1194246 → 1194247 | h24-20 | 112.3 GB (114.9) | 4.3–4.6 |
+| e3v5_MAS_noAG | MAS | A0ASMAS_noAG (6e194331…) | 42 | 1194248 → 1194249 → 1194250 | h24-19 | 113.2 GB (116.2) | 4.3–4.4 |
+| e3v5_A0_seed2 | A0 | A0ASMAS (a7051944…, unchanged) | 43 | 1194251 → 1194252 → 1194253 | h24-09 | 105.9 GB (105.9) | 3.8–3.9 |
+
+**Start checks (first ~30 steps):** all at commit 6e3f335, `git status` clean, intended train.csv md5 and echoed SETUP / TEXTDIR / SEED; `[data] demos=3565 samples=565397 skipped_not_in_text_csv=72`, texts 146 / 289 / 68; loss falling (A0_seed2 starts at 0.459 vs 0.362 for e3v5_A0 at step 10 and is close by step 30: 0.271 vs 0.266).
+**Mid-run (2 Nov 11:20, part 1 at ~19 h):** AS_noAG step 15,230, MAS_noAG 14,110, A0_seed2 16,550; `steps_10000_model.pt` saved in all three, resume every 1,000 steps, no NaN / OOM / traceback. Training loss (mean per window; train batches only, NOT a result):
+| Window | e3v5_A0 | A0_seed2 | e3v5_AS | AS_noAG | e3v5_MAS | MAS_noAG |
+|---|---|---|---|---|---|---|
+| 0–2K | 0.164 | 0.164 | 0.160 | 0.161 | 0.153 | 0.155 |
+| 4–6K | 0.090 | 0.090 | 0.090 | 0.090 | 0.088 | 0.088 |
+| 10–12K | 0.060 | 0.059 | 0.061 | 0.062 | 0.060 | 0.061 |
+| 13–14K | 0.048 | 0.048 | 0.049 | 0.050 | 0.049 | 0.049 |
+Each new run tracks its e3v5 counterpart within ~0.002: removing Achieved Goals barely changes the training fit, and seed 43 gives almost the same curve as seed 42. Expected finish (part 2, if it starts without queueing): A0_seed2 ~02:30, AS_noAG ~05:30, MAS_noAG ~07:00 on 3 Nov.
+**Held-out eval:** `heldout_eval.py` now takes the test CSV from the run's args.json (test.csv next to the training text_csv), so the noAG runs are scored on `A0ASMAS_noAG/test.csv` (md5 7e73405d…).
