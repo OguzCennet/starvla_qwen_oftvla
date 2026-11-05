@@ -215,13 +215,14 @@ Per-task L1 differences (all frames): mean |d| / max |d| — A0 vs A0_seed2 0.00
 **What:** read-only analysis of the fork's GR00T and PI heads and their original LIBERO recipe (`docs/briefs/flow_heads_spec.md`, commit f22e6ec), then decisions for step 2 (spec §11). No code yet.
 **Counted parameters:** GR00T head 161.5M (model 4.60B), PI head 3.352B (model 7.79B). PI full fine-tuning does not fit on 1 H200 (≈ 181 GB) and needs ≥ 2 H200 with ZeRO-2. GR00T fits on 1 H200 (≈ 120 GB, estimate).
 **Decisions:**
-- **Steps:** 30K.
 - **VLM:** Qwen3-VL-4B-Instruct by default, behind a swappable per-family adapter (fork-style registry). The adapter gives hidden states + mask, hidden size and layer count from the config, and prompt / special tokens. Run dirs carry a VLM tag; `base_vlm` is recorded in args.json.
 - **Prompt:** `CoT_prompt` wraps the whole per-frame text for GR00T / PI.
 - **Precision:** DeepSpeed ZeRO-2 bf16 (the fork's config) for GR00T / PI.
 - **GPUs:** 8 × 16. Fallback 1 × 16 × 8, GR00T only. The same setup for all three texts of a head.
 - **Quirks:** keep all fork quirks.
 - **Held-out sampling policy:** later.
-**Known OFT deviations (recorded, not changed):** no `CoT_prompt` (D3); fp32 weights + autocast instead of DeepSpeed bf16 (D2).
-**PI forward: pending.** The published StarVLA-π checkpoint (`1208_libero_all_QwenPI_qwen3`) was trained with the code at f4473e4 ≡ 09b5652 (PI files unchanged 8-18 Dec 2025). There every DiT block cross-attends to its own layer, with **no padding mask**, and the VLM runs **FlashAttention-2**. The 985c223 legacy switch also gives all-cross attention, but it applies the mask and forces SDPA. So the decision's condition ("exactly recoverable, nothing else differs") is not met for that switch (spec §12.1). Decision needed.
-**New evidence from the released checkpoints (spec §12.2):** the README's "30K" numbers are step-30K evaluations of an **80K** (OFT, 8 × 16) and a **100K** (PI, 16 × 8) cosine schedule, both with CoT_prompt and full fine-tuning. At step 30K the LR is still ≈ 0.76 / 0.85 × peak. Our 30K-schedule OFT runs (M4b-M10) therefore differ from the published setting in schedule length too. This affects decision "30K" and needs re-confirmation.
+**Decisions of 2026-11-05 (second round, spec §11):**
+- **PI forward = 985c223 legacy switch** (every DiT block cross-attends to its own VLM layer, padding mask applied, VLM in SDPA). The published checkpoint `1208_libero_all_QwenPI_qwen3` was trained with the code at f4473e4 ≡ 09b5652, which had no DiT padding mask and ran the VLM with FlashAttention-2. That forward attends to left padding, whose amount depends on text length and batch partners, so it would confound A0/AS/MAS and make held-out predictions batch-dependent. Recorded as a known difference to the published run (spec §12.1).
+- **Schedule:** the original total-step cosine schedule, stopped at step 30K (as the published numbers were produced). PI 100K schedule (released run config). GR00T **80K** schedule: `run_libero_train.sh:47` overrides the yaml's 100K; the released Qwen2.5-VL GR00T LIBERO run also used 80K. Global batch 128; checkpoints at 10K / 20K / 30K.
+- **Known OFT deviations (recorded, not changed):** (1) no `CoT_prompt`; (2) fp32 weights + autocast instead of DeepSpeed bf16; (3) a full 30K cosine decay (LR 0.04 × peak at 30K) instead of the published 80K schedule (≈ 0.76 × peak at 30K).
+**Evidence from the released checkpoints (spec §12.2):** the README's "30K" numbers are step-30K evaluations of an 80K (OFT, 8 × 16) and a 100K (PI, 16 × 8) schedule, both with CoT_prompt and full fine-tuning.
