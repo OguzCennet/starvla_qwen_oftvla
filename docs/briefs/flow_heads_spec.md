@@ -298,3 +298,76 @@ Categories: **identical** / **infra-forced** / **experiment-intrinsic** / **UNJU
 | H8 | Inference | 4 Euler steps from noise, one sample (GR00T_ActionHeader.py:365-421; LayerwiseFM_ActionHeader.py:349-408) | — | must be identical; seed policy per Q9 |
 
 Nothing in this table has been fixed; it is a report. D2 and D3 are the two UNJUSTIFIED items that already affect the finished OFT runs (M4b-M10). D1 becomes one for new runs if multiple GPUs are used for the flow heads but not for OFT.
+
+---
+
+## 11. Decisions (2026-11-05)
+
+| # | Topic | Decision | Status |
+|---|---|---|---|
+| 1 | PI forward | Use the older forward that trained the published StarVLA-π LIBERO checkpoint (every DiT block cross-attends), **only if** it can be recovered exactly from the fork's git history; no reconstruction by hand | **Condition not met as stated, so PENDING your decision.** The training-time code is pinned exactly in git, but the 985c223 "legacy" switch is **not** the same forward (§12.1) |
+| 2 | Steps | 30K (README; same as our OFT runs) | decided. **But see §12.2: the README's 30K rows are the 30K checkpoints of 80K (OFT) / 100K (PI) cosine schedules, not 30K-step runs.** Re-confirmation needed |
+| 3 | Base VLM | Default `Qwen3-VL-4B-Instruct`, swappable. Mirror the fork's registry (`get_vlm_model` by `base_vlm` name, `starVLA/model/modules/vlm/__init__.py`): one adapter per VLM family exposing (a) forward → all hidden states + attention mask; (b) `hidden_size`, `num_layers` read from the loaded config (no hard-coded 2560 / 36; PI's DiT depth = number of VLM layers follows from the config); (c) prompt building and special-token ids (action query tokens, image tokens, CoT_prompt). Only the Qwen3-VL adapter is built now; heads depend only on the adapter interface. `base_vlm` goes into args.json; run-directory names carry a short VLM tag, so runs with different backbones cannot be mixed in `heldout_analysis.py` (labels come from folder names) | decided; built in step 2 |
+| 4 | Prompt wrapper | GR00T and PI use `CoT_prompt` exactly as the original applies it to the dataset language field. Our language field is the full per-frame text (`text_A0` / `text_AS` / `text_MAS`), so the whole text goes into `{instruction}`. OFT runs stay unchanged; the missing wrapper is recorded as a known OFT deviation (D3) | decided |
+| 5 | Precision | DeepSpeed bf16 (the fork's `ds_config.yaml`, ZeRO-2) for GR00T and PI. OFT stays fp32 weights + bf16 autocast, recorded as a known OFT deviation (D2) | decided |
+| 6 | GPUs | Target the original 8 GPUs × 16. Fallback, only if queueing makes this impractical: 1 GPU × 16 × 8 accumulation (GR00T only; PI needs ≥ 2 GPUs). All three text runs of a head use the same setup. (The released PI run used 16 GPUs × 8, also 128 per step; §12.2) | decided |
+| 7 | Fork quirks | Keep all of them: PI's unclamped t, repeat factor 2 (PI) vs 8 (GR00T), double dropout on the attention output, unused state encoder / DiT output layers, dropout-on `mse_score` eval | decided |
+| 8 | Held-out sampling policy | Decided later, in the eval step | open |
+
+## 12. Evidence from the released checkpoints (Hugging Face, read 2026-11-05)
+
+Sources (public metadata only; no weights downloaded):
+- `StarVLA/Qwen3-VL-PI-LIBERO-4in1` @ a461ce2: `config.yaml`, `slurm_script`, `README.md`, `summary.jsonl`.
+- `StarVLA/Qwen3-VL-OFT-LIBERO-4in1` @ 3917714: `config.yaml`, `run_libero_train.sh`, `README.md`, `summary.jsonl`.
+- No Qwen3-VL GR00T LIBERO checkpoint is published (only `Qwen2.5-VL-GR00T-LIBERO-4in1`).
+
+### 12.1 PI forward: what trained the published checkpoint, and is it recoverable?
+
+**Which code.** The run is `1208_libero_all_QwenPI_qwen3` (config.yaml `run_id`; created on HF 2025-12-17). In the fork, the PI forward files `QwenPI.py`, `LayerwiseFM_ActionHeader.py` and `cross_attention_dit.py` were last changed by f4473e4 (2025-12-08 14:03, "auto map dim for qwen3vl"). They are byte-identical from f4473e4 through 09b5652 (2025-12-08 17:20) and up to 2025-12-18; no commit in that window touches them. `QWen3.py` changes only by the removal of `device_map="cuda"` in 09b5652. So, assuming the run used committed code, the training forward is **f4473e4 ≡ 09b5652** (`starVLA/model/framework/QwenPI.py`, `.../LayerwiseFM_ActionHeader.py`, `.../cross_attention_dit.py`, `.../vlm/QWen3.py`). That assumption cannot be checked: the config has `is_resume: True`, and local edits are invisible.
+
+**That forward** (09b5652):
+- `QwenPI.forward` (QwenPI.py:103-140): `vl_embs_list = hidden_states[-36:]` (36 hard-coded, = Qwen3-VL-4B); R = 2 hard-coded (line 128); `self.action_model(vl_embs_list_repeated, actions_target_repeated, state_repeated)`, **no attention mask**.
+- Head (LayerwiseFM_ActionHeader.py:272-324): hand-written loop `for layer_idx, layer in enumerate(self.model.transformer_blocks): layer(hidden_states=…, encoder_hidden_states=vl_embs_list[layer_idx], temb=temb)`. So every block gets its own layer's states, with no mask. The odd blocks are *built* as self-attention modules (`interleave_self_attention: true` in the run config), but they receive encoder states. diffusers then projects K/V from them with the query-dim projection: 2560 → 2560, the same shapes as a cross block. No `norm_out` / `proj_out` (decoder on the raw block output). `sample_time` without clamp. Inference loop is the same (lines 326-383), also without a mask.
+- VLM (QWen3.py @09b5652:59): **`attn_implementation="flash_attention_2"` hard-coded**. `config.hidden_size` is patched (line 70). Same prompt / CoT_prompt code (lines 122-124).
+
+**Diff against 985c223 run with the legacy switch** (`use_canonical_forward=False` → `interleave_self_attention=False`, cross_attention_dit.py:223-225):
+
+| Aspect | Training forward (09b5652) | 985c223, legacy switch | Same? |
+|---|---|---|---|
+| block i ↔ `hidden_states[-36:][i]`, all 36 blocks cross-attend | yes (hand loop) | yes (`DiT.forward`, layer-wise list, cross_attention_dit.py:299-318) | yes |
+| K/V projection shapes of the odd blocks | built with `cross_attention_dim=None` → `to_k/to_v: Linear(2560, 2560)` | built with `cross_attention_dim=2560` → `Linear(2560, 2560)` | yes (same shapes and math; `is_cross_attention` flag differs, `norm_cross` is None in both) |
+| timestep embedding, AdaLN, decoder on pre-output, no `norm_out`/`proj_out` | yes | yes (`return_pre_output=True`) | yes |
+| **padding mask in the DiT** | **none**: left-padding positions are attended in every block, in training and inference | **applied** (QwenPI.py:174, 228-231, 280-281; LayerwiseFM_ActionHeader.py:337, 399) | **NO** |
+| **VLM attention kernel** | **flash_attention_2** | **sdpa forced** (QWen3.py:53) | **NO**: different kernels, and because the old head reads the padding positions, their hidden states (which depend on the kernel's padding handling) feed the head |
+| `proj_out_2` (unused) | `Linear(2560, 1024)` (`output_dim` from the run yaml) | `Linear(2560, 26)` (DiT default) | no, but unused (affects only state_dict loading) |
+| t sampling, R = 2, dropout 0.2 ×4, Euler 4 steps | same | same | yes |
+| layer count | hard-coded 36 | from config (36 for 4B) | yes for Qwen3-VL-4B |
+| transformers | 4.57.0 pinned (requirements.txt @09b5652) | 4.57.0 pinned (= our container) | yes |
+| diffusers, flash-attn | **unpinned** (`diffusers` without version) | unpinned; container: diffusers 0.39.0, flash_attn 2.7.4.post1 | unknown |
+
+**Result.** The training forward of the published checkpoint *is* identifiable in git history (f4473e4 ≡ 09b5652). But the 985c223 legacy switch does **not** reproduce it: it adds the padding mask in all 36 cross-attention blocks and runs the VLM with SDPA instead of FlashAttention-2. The diffusers / flash-attn versions of the original run are not recorded anywhere. Following decision 1 (no reconstruction by hand), PI is on hold until you decide. Options:
+- (a) Port the f4473e4/09b5652 files verbatim (no mask, FA2). This is "taken from git", not hand-reconstructed, but it is a different code snapshot from the rest of our reference (985c223).
+- (b) Use the 985c223 canonical forward (interleaved).
+- (c) Use the 985c223 legacy switch (all-cross, with mask, SDPA). That is what the fork's maintainers use to *evaluate* the released checkpoint (README:80-90), but it is not what trained it.
+
+### 12.2 Steps, schedule and GPUs of the published runs
+
+| | PI (released) | OFT (released) | README table |
+|---|---|---|---|
+| run | `1208_libero_all_QwenPI_qwen3` | `1226_libero4in1_qwen3oft` | — |
+| GPUs × per-GPU batch | **2 nodes × 8 GPUs × 8 = 128** (slurm_script `-N 2`, `--gres=gpu:8`, `per_device_batch_size 8`) | **8 × 16 = 128** (`--num_processes 8`, `per_device_batch_size 16`) | — |
+| gradient accumulation | 1 | 1 | — |
+| schedule length (`max_train_steps`) | **100,000** | **80,000** | "30K" |
+| released weights | step 100,000 | step 50,000 | — |
+| success at step 30,000 | 95.7 % (card: 0.958 / 0.996 / 0.988 / 0.884) | 96.55 % (card) | PI 95.7, OFT 96.6 |
+| CoT_prompt | yes | yes | — |
+| freeze | `true` → none (full FT) | `true` → none (full FT) | — |
+| VLM | Qwen3-VL-4B-Instruct | Qwen3-VL-4B-Instruct | "Qwen3-VL" |
+| LR (VLM / head) | 1e-5 / 1e-4 (base 3e-5, empty group) | 1e-5 / 1e-4 | — |
+
+Consequences:
+- **Q2 (steps) is answered differently from what decision 2 assumes.** The README's "30K" numbers are evaluations at step 30K of 80K / 100K cosine schedules. At step 30K the learning rate is still high (`cosine_with_min_lr`, 5K warmup: 0.04 + 0.96 · ½(1 + cos(π · progress)) ≈ 0.85 × peak for the 100K schedule, ≈ 0.76 × for 80K). Our OFT runs instead decay to 0.04 × peak at 30K. "30K steps" in the sense of a full 30K schedule is therefore **not** the published setting. That applies to our finished OFT runs too (D4 should read "differs", category UNJUSTIFIED unless re-decided).
+- **Q3, Q5 answered:** Qwen3-VL-4B-Instruct; full fine-tuning (packaged `freeze_modules: true` selects nothing).
+- **Q4 answered:** 128 per step in both runs. The "9.54 epochs" in the README remains unexplained.
+- **Q6:** CoT_prompt was active in both published runs (decision 4 matches).
+- The PI card says "one image_0 view". The run config does contain `obs: [image_0]`, but the 09b5652 `Libero4in1DataConfig` (`starVLA/dataloader/gr00t_lerobot/data_config.py:448-`) loads `video.primary_image` + `video.wrist_image` and does not read `obs`. So it is two views, as in our pipeline.

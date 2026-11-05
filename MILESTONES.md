@@ -210,3 +210,18 @@ Per-task L1 differences (all frames): mean |d| / max |d| — A0 vs A0_seed2 0.00
 - Gripper: MAS vs A0_seed2 is +0.4 pt (16/5, p 0.018), half the +0.8 pt against A0; A0_seed2 itself is +0.4 pt above A0. So about half of the M9 gripper gain is seed noise. Near step changes the seed difference (+0.9 pt) is as large as the MAS gain → the near-band gripper numbers are not interpretable.
 - Caveats: still one seed for AS / MAS / noAG runs (noise estimated from the A0 pair only); offline teacher-forced L1, not closed-loop success.
 
+
+## ⏳ M11 — Flow heads (QwenGR00T / QwenPI): spec and decisions (2026-11-05)
+**What:** read-only analysis of the fork's GR00T and PI heads and their original LIBERO recipe (`docs/briefs/flow_heads_spec.md`, commit f22e6ec), then decisions for step 2 (spec §11). No code yet.
+**Counted parameters:** GR00T head 161.5M (model 4.60B), PI head 3.352B (model 7.79B). PI full fine-tuning does not fit on 1 H200 (≈ 181 GB) and needs ≥ 2 H200 with ZeRO-2. GR00T fits on 1 H200 (≈ 120 GB, estimate).
+**Decisions:**
+- **Steps:** 30K.
+- **VLM:** Qwen3-VL-4B-Instruct by default, behind a swappable per-family adapter (fork-style registry). The adapter gives hidden states + mask, hidden size and layer count from the config, and prompt / special tokens. Run dirs carry a VLM tag; `base_vlm` is recorded in args.json.
+- **Prompt:** `CoT_prompt` wraps the whole per-frame text for GR00T / PI.
+- **Precision:** DeepSpeed ZeRO-2 bf16 (the fork's config) for GR00T / PI.
+- **GPUs:** 8 × 16. Fallback 1 × 16 × 8, GR00T only. The same setup for all three texts of a head.
+- **Quirks:** keep all fork quirks.
+- **Held-out sampling policy:** later.
+**Known OFT deviations (recorded, not changed):** no `CoT_prompt` (D3); fp32 weights + autocast instead of DeepSpeed bf16 (D2).
+**PI forward: pending.** The published StarVLA-π checkpoint (`1208_libero_all_QwenPI_qwen3`) was trained with the code at f4473e4 ≡ 09b5652 (PI files unchanged 8-18 Dec 2025). There every DiT block cross-attends to its own layer, with **no padding mask**, and the VLM runs **FlashAttention-2**. The 985c223 legacy switch also gives all-cross attention, but it applies the mask and forces SDPA. So the decision's condition ("exactly recoverable, nothing else differs") is not met for that switch (spec §12.1). Decision needed.
+**New evidence from the released checkpoints (spec §12.2):** the README's "30K" numbers are step-30K evaluations of an **80K** (OFT, 8 × 16) and a **100K** (PI, 16 × 8) cosine schedule, both with CoT_prompt and full fine-tuning. At step 30K the LR is still ≈ 0.76 / 0.85 × peak. Our 30K-schedule OFT runs (M4b-M10) therefore differ from the published setting in schedule length too. This affects decision "30K" and needs re-confirmation.
