@@ -154,7 +154,7 @@ Tokens at L10T01 demo_31 raw 180: A0 177, AS 225, MAS 236 (images 2 × 64). Star
 - Without the 2 leaked tasks: MAS vs A0 −2.6 % (p = 0.05), gripper 19 / 2.
 **Caveats:** one seed per setup (run-to-run noise measured in M10); offline teacher-forced L1, not closed-loop success; near/far uses the v5 step boundaries.
 
-## ⏳ M10 — Runs e3v5_AS_noAG / e3v5_MAS_noAG / e3v5_A0_seed2 (started 2026-11-01)
+## ✅ M10 — Runs e3v5_AS_noAG / e3v5_MAS_noAG / e3v5_A0_seed2 (2026-11-01 → 2026-11-05)
 **Question:** (1) do AS / MAS need the "Achieved Goals" lines? (2) how large is run-to-run noise (seed) compared with the M9 differences?
 **Design:** identical to the e3v5 runs (M8: same recipe, demos, statistics, code, 1 H200, 16 × 8, 30K steps) except one factor each. Brief: `docs/briefs/noag_runs.md`.
 - Texts without Achieved Goals: `~/VLA_FT/DataSamples/Libero/A0ASMAS_noAG/` (`make_noag.py`, `README.md`, `report.txt`). The block (heading + state lines) removed from `text_AS` / `text_MAS`; everything else identical, checks asserted. Each AS / MAS text is now 4 lines: Instruction / Current Goal / In-Progress Step / Next Step. Removing the block merged **no** texts (train A0 68 / AS 146 / MAS 289, as before): the Achieved-Goals lines were redundant given the other lines. Prompt tokens at L10T01 demo_31 raw 180: A0 177, AS 216 (was 225), MAS 217 (was 236).
@@ -165,7 +165,7 @@ Tokens at L10T01 demo_31 raw 180: A0 177, AS 225, MAS 236 (images 2 × 64). Star
 |---|---|---|---|---|---|---|---|
 | e3v5_AS_noAG | AS | A0ASMAS_noAG (6e194331…) | 42 | 1194245 → 1194246 → 1194247 | h24-20 | 112.3 GB (114.9) | 4.3–4.6 |
 | e3v5_MAS_noAG | MAS | A0ASMAS_noAG (6e194331…) | 42 | 1194248 → 1194249 → 1194250 | h24-19 | 113.2 GB (116.2) | 4.3–4.4 |
-| e3v5_A0_seed2 | A0 | A0ASMAS (a7051944…, unchanged) | 43 | 1194251 → 1194252 → 1194253 | h24-09 | 105.9 GB (105.9) | 3.8–3.9 |
+| e3v5_A0_seed2 | A0 | A0ASMAS (a7051944…, unchanged) | 43 | 1194251 → 1194252 ✗ → 1194253 ✗ → 1211005 | h24-09 | 105.9 GB (105.9) | 3.8–3.9 |
 
 **Start checks (first ~30 steps):** all at commit 6e3f335, `git status` clean, intended train.csv md5 and echoed SETUP / TEXTDIR / SEED; `[data] demos=3565 samples=565397 skipped_not_in_text_csv=72`, texts 146 / 289 / 68; loss falling (A0_seed2 starts at 0.459 vs 0.362 for e3v5_A0 at step 10 and is close by step 30: 0.271 vs 0.266).
 **Mid-run (2 Nov 11:20, part 1 at ~19 h):** AS_noAG step 15,230, MAS_noAG 14,110, A0_seed2 16,550; `steps_10000_model.pt` saved in all three, resume every 1,000 steps, no NaN / OOM / traceback. Training loss (mean per window; train batches only, NOT a result):
@@ -175,5 +175,38 @@ Tokens at L10T01 demo_31 raw 180: A0 177, AS 225, MAS 236 (images 2 × 64). Star
 | 4–6K | 0.090 | 0.090 | 0.090 | 0.090 | 0.088 | 0.088 |
 | 10–12K | 0.060 | 0.059 | 0.061 | 0.062 | 0.060 | 0.061 |
 | 13–14K | 0.048 | 0.048 | 0.049 | 0.050 | 0.049 | 0.049 |
-Each new run tracks its e3v5 counterpart within ~0.002: removing Achieved Goals barely changes the training fit, and seed 43 gives almost the same curve as seed 42. Expected finish (part 2, if it starts without queueing): A0_seed2 ~02:30, AS_noAG ~05:30, MAS_noAG ~07:00 on 3 Nov.
-**Held-out eval:** `heldout_eval.py` now takes the test CSV from the run's args.json (test.csv next to the training text_csv), so the noAG runs are scored on `A0ASMAS_noAG/test.csv` (md5 7e73405d…).
+Each new run tracks its e3v5 counterpart within ~0.002: removing Achieved Goals barely changes the training fit, and seed 43 gives almost the same curve as seed 42. **Held-out eval:** `heldout_eval.py` now takes the test CSV from the run's args.json (test.csv next to the training text_csv), so the noAG runs are scored on `A0ASMAS_noAG/test.csv` (md5 7e73405d…).
+**Training finished:**
+| Run | Jobs | Resume at | Finished | Loss 28–30K (e3v5) | Held-out eval job |
+|---|---|---|---|---|---|
+| e3v5_AS_noAG | 1194245 → 1194246 → 1194247 (exit on `DONE`) | — | 3 Nov 06:21 | 0.0164 (0.017) | 1210759 |
+| e3v5_MAS_noAG | 1194248 → 1194249 → 1194250 (exit on `DONE`) | — | 3 Nov 08:12 | 0.0166 (0.017) | 1210760 |
+| e3v5_A0_seed2 | 1194251 → 1194252 ✗ → 1194253 ✗ → 1211005 | 20,093; 24,000 | 4 Nov 02:26 | 0.0156 (0.016) | 1211016 |
+- All three: 3,000 logged steps, no NaN, `steps_{10000,20000,30000}_model.pt`, `DONE`. Part 1 at 6e3f335, later jobs at db8c183 (training code identical).
+- **A0_seed2 failure:** 1194252 resumed at 20,093, saved resume points up to 24,000, then crashed on 2 Nov 21:02 writing the step-25,000 resume file (`PytorchStreamWriter failed writing file data.pkl: file write failed`, a write failure on /hnvme). 1194253 started 6 s later and failed after 4 s (exit 0:53) without creating its log → /hnvme not writable at that time (inode quota near its limit, or a filesystem hiccup; on 5 Nov: 26.5K files of 61K soft). Resubmitted as 1211005: resumed cleanly from 24,000 and finished. `log.jsonl` therefore has 100 duplicate steps (24,010–25,000, replayed with a new shuffle order); keep the last entry per step.
+**Held-out eval** (every frame of the 1,158 test demos, 186,874 frames; noAG runs on `A0ASMAS_noAG/test.csv` 7e73405d…, A0_seed2 on `A0ASMAS/test.csv` e2fb4c48…, both resolved from args.json). Frame-weighted L1:
+| Run | 10K | 20K | 30K | M9 counterpart (30K) |
+|---|---|---|---|---|
+| A0_seed2 | 0.1230 | 0.1228 | **0.1224** | A0 0.1226 |
+| AS_noAG | 0.1200 | 0.1208 | **0.1202** | AS 0.1201 |
+| MAS_noAG | 0.1175 | 0.1196 | **0.1186** | MAS 0.1188 |
+**Analysis (30K, 6 runs, paired over the 24 test tasks; `runs/oftvla/analysis_6runs/`, report `step30000_report.txt`).** diff = b − a, L1 negative = b better; grip_agree positive = b better. MAS vs A0 reproduces M9 exactly.
+| b vs a | L1 all | L1 near | L1 far | grip all | grip near | grip far |
+|---|---|---|---|---|---|---|
+| **A0_seed2 vs A0** (noise) | −0.3 %, 9/15, p 0.92 | −2.0 %, 12/12, p 0.53 | +0.3 %, 9/15, p 0.60 | +0.4 pt, 14/8, p 0.15 | +0.9 pt, 10/10, p 0.67 | +0.3 pt, 15/7, p 0.10 |
+| MAS vs A0_seed2 | −4.0 %, 18/6, p 0.0018 | −6.4 %, 18/6, p 0.0072 | −3.4 %, 17/7, p 0.0031 | +0.4 pt, 16/5, p 0.018 | +0.6 pt, 15/7, p 0.046 | +0.4 pt, 15/7, p 0.054 |
+| MAS_noAG vs A0_seed2 | −4.0 %, 20/4, p 0.0003 | −5.3 %, 18/6, p 0.015 | −3.6 %, 21/3, p 0.0007 | +0.4 pt, 16/6, p 0.0083 | +0.4 pt, 14/8, p 0.098 | +0.3 pt, 17/5, p 0.050 |
+| AS vs A0_seed2 | −2.3 %, 15/9, p 0.084 | −2.6 %, 13/11, p 0.58 | −2.2 %, 17/7, p 0.049 | −0.1 pt, 13/9, p 0.66 | +0.1 pt, 9/13, p 0.73 | −0.1 pt, 12/10, p 0.78 |
+| AS_noAG vs A0_seed2 | −2.5 %, 15/9, p 0.034 | −4.2 %, 15/9, p 0.11 | −1.9 %, 15/9, p 0.025 | −0.1 pt, 14/8, p 0.25 | +0.1 pt, 13/9, p 0.92 | −0.2 pt, 10/12, p 0.90 |
+| MAS vs A0 (M9) | −4.3 %, 16/8, p 0.015 | −8.3 %, 17/7, p 0.0079 | −3.1 %, 15/9, p 0.040 | +0.8 pt, 20/2, p 1.6e-5 | +1.5 pt, 13/9, p 0.13 | +0.6 pt, 19/3, p 6.5e-5 |
+| MAS_noAG vs A0 | −4.2 %, 17/7, p 0.0035 | −7.2 %, 18/6, p 0.0031 | −3.3 %, 17/7, p 0.011 | +0.8 pt, 19/3, p 9.9e-5 | +1.3 pt, 11/11, p 0.39 | +0.6 pt, 19/3, p 5.0e-4 |
+| MAS_noAG vs MAS | +0.1 %, 13/11, p 0.64 | | | −0.1 pt, 11/11, p 0.95 | | |
+| AS_noAG vs AS | −0.2 %, 14/10, p 1.0 | | | −0.0 pt, 11/11, p 0.80 | | |
+Per-task L1 differences (all frames): mean |d| / max |d| — A0 vs A0_seed2 0.0033 / 0.0077 (L90T08); A0 vs MAS 0.0070 / 0.0441 (L90T41); A0 vs MAS_noAG 0.0069 / 0.0359 (L90T41).
+**Reading:**
+- Seed noise is small on average (A0_seed2 vs A0: −0.3 %, p 0.92, CI [−0.0019, +0.0012] contains 0) but not zero per task (mean |d| 0.0033, up to 0.0077): per-task differences below ~0.008 are within seed noise. The MAS effect is about 15× the seed effect on the mean (−0.0049 / −0.0052 vs −0.0003) and is carried mainly by fewer large per-task gains (max 0.044 on L90T41).
+- **The MAS gain holds against the second A0:** MAS and MAS_noAG beat A0_seed2 by ~4 % on all frames (18/6 and 20/4 tasks, p ≤ 0.002), more near step changes (−5 to −6 %) than far (−3.5 %). AS gains are about half as large and only borderline.
+- Achieved Goals are not needed: removing them changes nothing measurable (MAS_noAG vs MAS +0.1 %, AS_noAG vs AS −0.2 %).
+- Gripper: MAS vs A0_seed2 is +0.4 pt (16/5, p 0.018), half the +0.8 pt against A0; A0_seed2 itself is +0.4 pt above A0. So about half of the M9 gripper gain is seed noise. Near step changes the seed difference (+0.9 pt) is as large as the MAS gain → the near-band gripper numbers are not interpretable.
+- Caveats: still one seed for AS / MAS / noAG runs (noise estimated from the A0 pair only); offline teacher-forced L1, not closed-loop success.
+
