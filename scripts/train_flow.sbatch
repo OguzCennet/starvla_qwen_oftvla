@@ -45,10 +45,10 @@ TORCHRUN='torchrun --nnodes $SLURM_NNODES --nproc_per_node 4 --node_rank $SLURM_
 
 if [ "${OFTVLA_NCCL_TEST:-0}" = "1" ]; then
   echo "### NCCL preflight: sockets (NCCL_IB_DISABLE=1)"
-  in_container "" "NCCL_IB_DISABLE=1 $TORCHRUN scripts/checks/nccl_bw.py" 2>&1 | grep -E "^\[nccl\]|NET/|Using network"
+  in_container "" "NCCL_IB_DISABLE=1 $TORCHRUN scripts/checks/nccl_bw.py" 2>&1 | grep -E "^\[nccl\]|NET/|Using network|rror|Traceback|failed" | head -40
   if [ -n "$IB_BIND" ]; then
     echo "### NCCL preflight: InfiniBand (host verbs libraries bound)"
-    in_container "$IB_BIND" "$SETLIB $TORCHRUN scripts/checks/nccl_bw.py" 2>&1 | grep -E "^\[nccl\]|NET/|Using network|IB"
+    in_container "$IB_BIND" "$SETLIB $TORCHRUN scripts/checks/nccl_bw.py" 2>&1 | grep -E "^\[nccl\]|NET/|Using network|IB|rror|Traceback|failed" | head -40
   fi
 fi
 
@@ -57,6 +57,7 @@ LAUNCH='accelerate launch --config_file configs/deepspeed/deepspeed_zero2.yaml -
   --num_processes $((4 * SLURM_NNODES)) -m oftvla.train_flow --head $HEAD --setup $SETUP --run_dir $RUN_DIR
   --data_root $DATA --train_ids $SPLITS/e3_train_ids.csv --forbidden_ids $SPLITS/e3_testdemo_ids.csv
   --text_csv $TEXTDIR/train.csv --base_vlm $BASE_VLM --num_workers 12'
+LAUNCH=$(echo "$LAUNCH" | tr '\n' ' ')  # one line: bash -c would treat newlines as command separators
 for STOP in ${OFTVLA_SEGMENTS:-full}; do
   echo "### train segment: $STOP"
   if [ "$STOP" = full ]; then SEG=""; else SEG="--exit_after_step $STOP"; fi
