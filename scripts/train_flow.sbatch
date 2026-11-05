@@ -16,8 +16,10 @@
 source $HOME/VLA_FT/starvla_qwen_oftvla/scripts/common.sh
 export REPO SIF BASE_VLM DATA SPLITS TEXTS RUNS PYLIBS  # used by the shell inside the container
 cd $REPO
-export HEAD=${1:?HEAD gr00t|pi}; export SETUP=${2:?SETUP A0|AS|MAS}; export TEXTDIR=${3:-$TEXTS}
-shift $(( $# < 3 ? $# : 3 )); [ "${1:-}" = "--" ] && shift
+export HEAD=${1:?HEAD gr00t|pi}; export SETUP=${2:?SETUP A0|AS|MAS}; shift 2
+export TEXTDIR=$TEXTS
+if [ $# -gt 0 ] && [ "$1" != "--" ]; then TEXTDIR=$1; shift; fi  # optional TEXTDIR
+[ "${1:-}" = "--" ] && shift
 export EXTRA="$*"
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
