@@ -19,7 +19,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
-from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+from oftvla.vlm import get_vlm_adapter
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -156,42 +157,31 @@ class QwenOFT(nn.Module):
     def __init__(self, cfg: OFTConfig):
         super().__init__()
         self.cfg = cfg
-        self.vlm = Qwen3VLForConditionalGeneration.from_pretrained(
-            cfg.base_vlm,
-            attn_implementation=cfg.attn_implementation,
-            dtype=getattr(torch, cfg.vlm_dtype),
-        )
-        self.processor = AutoProcessor.from_pretrained(cfg.base_vlm)
-        self.processor.tokenizer.padding_side = "left"
+        # The adapter is a plain object; its HF model is registered here as ``self.vlm`` so the
+        # state_dict keys (vlm.*, action_head.*) and all saved checkpoints stay unchanged.
+        self.adapter = get_vlm_adapter(cfg.base_vlm, attn_implementation=cfg.attn_implementation, dtype=cfg.vlm_dtype)
+        self.vlm = self.adapter.model
+        self.processor = self.adapter.processor
 
-        hidden = self.vlm.config.text_config.hidden_size
-        self.action_head = L1RegressionActionHead(hidden, cfg.action_dim, cfg.num_resnet_blocks)
-
-        ids = self.processor.tokenizer(cfg.query_token, add_special_tokens=False)["input_ids"]
-        if len(ids) != 1:
-            # StarVLA silently takes ids[0]; we refuse, because a multi-token query would break gathering.
-            raise ValueError(f"Query token {cfg.query_token!r} is {len(ids)} tokens ({ids}) in {cfg.base_vlm}")
-        self.query_token_id = ids[0]
+        self.action_head = L1RegressionActionHead(self.adapter.hidden_size, cfg.action_dim, cfg.num_resnet_blocks)
+        # Must be a single token (StarVLA silently takes ids[0]; the adapter refuses).
+        self.query_token_id = self.adapter.token_id(cfg.query_token)
 
     # --- inputs ---------------------------------------------------------
     def build_inputs(self, images: Sequence[List[Image.Image]], instructions: Sequence[str]) -> Dict[str, torch.Tensor]:
-        """One user turn per sample: [img_0][img_1]...[text]; generation prompt appended."""
-        messages = []
-        for imgs, instr in zip(images, instructions, strict=True):
-            content = [{"type": "image", "image": im} for im in imgs]
-            content.append({"type": "text", "text": build_prompt(instr, self.cfg.chunk_len, self.cfg.query_token)})
-            messages.append([{"role": "user", "content": content}])
-        batch = self.processor.apply_chat_template(
-            messages, tokenize=True, padding=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
-        )
-        return batch.to(self.vlm.device)
+        """One user turn per sample: [img_0][img_1]...[text]; generation prompt appended.
+
+        OFT keeps CoT_prompt OFF (cot_prompt=None): the finished OFT runs were trained without it
+        (known deviation D3, docs/briefs/flow_heads_spec.md), and this keeps them reproducible.
+        """
+        texts = [build_prompt(instr, self.cfg.chunk_len, self.cfg.query_token) for instr in instructions]
+        return self.adapter.build_inputs(images, texts, cot_prompt=None)
 
     # --- core -----------------------------------------------------------
     def _predict_normalized(self, images, instructions) -> torch.Tensor:
         inputs = self.build_inputs(images, instructions)
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=inputs["input_ids"].is_cuda):
-            out = self.vlm(**inputs, output_hidden_states=True, return_dict=True)
-        last_hidden = out.hidden_states[-1]  # [B, L, H]
+        hidden_states, _ = self.adapter.forward(inputs)  # bf16 autocast inside, as before
+        last_hidden = hidden_states[-1]  # [B, L, H]
         queries = gather_query_states(last_hidden, inputs["input_ids"], self.query_token_id, self.cfg.chunk_len)
         # Head runs in fp32 (StarVLA: autocast float32 around the head).
         with torch.autocast("cuda", enabled=False):
