@@ -226,3 +226,19 @@ Per-task L1 differences (all frames): mean |d| / max |d| — A0 vs A0_seed2 0.00
 - **Schedule:** the original total-step cosine schedule, stopped at step 30K (as the published numbers were produced). PI 100K schedule (released run config). GR00T **80K** schedule: `run_libero_train.sh:47` overrides the yaml's 100K; the released Qwen2.5-VL GR00T LIBERO run also used 80K. Global batch 128; checkpoints at 10K / 20K / 30K.
 - **Known OFT deviations (recorded, not changed):** (1) no `CoT_prompt`; (2) fp32 weights + autocast instead of DeepSpeed bf16; (3) a full 30K cosine decay (LR 0.04 × peak at 30K) instead of the published 80K schedule (≈ 0.76 × peak at 30K).
 **Evidence from the released checkpoints (spec §12.2):** the README's "30K" numbers are step-30K evaluations of an 80K (OFT, 8 × 16) and a 100K (PI, 16 × 8) schedule, both with CoT_prompt and full fine-tuning.
+
+## ✅ M12 — QwenGR00T / QwenPI frameworks: full-size equivalence with the fork (2026-11-05)
+**What:** `oftvla/vlm` (VLM adapter registry, Qwen3-VL), `oftvla/heads/flow_matching` (DiT, encoders, GR00T and PI heads ported from 985c223; changes C1-C5 in the package docstring), `oftvla/flow_model.py` (QwenGR00T, QwenPI). CoT_prompt on (whole per-frame text), robot state off, VLM attention `sdpa` for both heads (QWen3.py:52-53 forces it for every framework), action horizon 8 (yaml:18; = our chunk), PI = legacy switch (`use_canonical_forward=False`). OFT unchanged (commit 9637a0c: `check_equivalence.py` at atol 0 and all captured inputs / predictions / losses `torch.equal` before vs after; prompt ids identical).
+**Component tests (CPU fp32, 25):** loss, predict_action, every parameter and input gradient `torch.equal` vs the fork modules for both DiT modes and no / full / padded masks; same RNG order with dropout on; negative controls (weight, mask, t) break the comparison.
+**Full size on 1 H200, bf16 (`scripts/checks/flow_equivalence.py`; 6 E3 val frames, A0/AS/MAS mixed, 181-256 tokens, 5 padded rows; real Qwen3-VL-4B; head initialised by the fork):**
+| | GR00T | PI |
+|---|---|---|
+| loss (injected noise / t), `torch.equal` | ✅ 1.14567924 | ✅ 3409.19873047 |
+| predict_action (injected init noise), `torch.equal` | ✅ | ✅ |
+| gradients, deterministic kernels (fork reproduces itself bitwise) | ✅ 961/961 tensors bitwise equal | ✅ 1241/1241 bitwise equal |
+| gradients, default kernels: fork-vs-fork rel_l2 VLM / head | 0.92-1.18e-2 / 0.85-1.28e-4 | 0.79-0.96e-2 / 2.7-3.6e-4 |
+| gradients, default kernels: ours-vs-fork rel_l2 VLM / head | 0.86-1.02e-2 / 1.05-1.42e-4 | 0.81-0.90e-2 / 3.2-3.6e-4 |
+| negative controls (head weight, mask entry, CoT off) | all differ | all differ |
+| peak memory fwd+bwd, batch 6 / micro-batch 16 (bf16 weights + grads, no optimiser) | 26.0 / 55.1 GB | 47.1 / 81.9 GB |
+Jobs: GR00T 1238639 (default), 1238731 (deterministic); PI 1238670 (default), 1238758 (deterministic).
+**Reading:** both frameworks are bitwise identical to the fork in forward, sampling and backward. With default (non-deterministic) attention-backward kernels the fork itself does not reproduce its gradients; ours lies in the same band (with 4 runs, the head rel_l2 maximum is 1.42e-4 vs 1.28e-4 for fork-vs-fork, a sampling effect, removed by the deterministic run). The PI loss at initialisation is ~3400 in both: the legacy forward cross-attends to the raw (un-normed) residual streams of the VLM layers.
