@@ -24,12 +24,13 @@ export EXTRA="$*"
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO} NCCL_DEBUG_SUBSYS=${NCCL_DEBUG_SUBSYS:-INIT,NET}
-export NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-ibs9}  # IPoIB interface for bootstrap / socket transport
+# NCCL picks the socket interface itself (prefers ib*); interface names differ between nodes.
 export RUN_DIR=$RUNS/$SLURM_JOB_NAME
 echo "HEAD=$HEAD SETUP=$SETUP TEXTDIR=$TEXTDIR NODES=$SLURM_NNODES ($SLURM_JOB_NODELIST) EXTRA=$EXTRA"
 git -C $REPO rev-parse --short HEAD; git -C $REPO status --short
 md5sum $TEXTDIR/train.csv
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1
+srun bash -c 'echo "[net] $(hostname): $(ip -o -4 addr show | awk "{print \$2}" | tr "\n" " ")"'
 
 IB_BIND=""
 if [ "${OFTVLA_HOST_IB:-0}" = "1" ]; then
