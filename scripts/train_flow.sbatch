@@ -37,6 +37,9 @@ if [ "${OFTVLA_HOST_IB:-0}" = "1" ]; then
   for l in libibverbs.so.1 libmlx5.so.1 librdmacm.so.1 libnl-3.so.200 libnl-route-3.so.200; do
     IB_BIND="$IB_BIND --bind $(readlink -f /usr/lib64/$l):/opt/hostib/$l"; done
   IB_BIND="$IB_BIND --bind /usr/lib64/libibverbs:/usr/lib64/libibverbs --bind /etc/libibverbs.d:/etc/libibverbs.d"
+  # the providers there are relative symlinks (libmlx5-rdmav*.so -> ../libmlx5.so.1.x): bind their targets too,
+  # otherwise libibverbs finds no driver for mlx5_0 and NCCL falls back to TCP sockets ("NET/IB : No device found")
+  for p in /usr/lib64/libibverbs/*.so; do t=$(readlink -f $p); IB_BIND="$IB_BIND --bind $t:$t"; done
 fi
 export IB_BIND
 in_container() {  # $1 = extra binds, rest = command run in bash inside the container on every node
@@ -48,10 +51,10 @@ TORCHRUN='torchrun --nnodes $SLURM_NNODES --nproc_per_node 4 --node_rank $SLURM_
 
 if [ "${OFTVLA_NCCL_TEST:-0}" = "1" ]; then
   echo "### NCCL preflight: sockets (NCCL_IB_DISABLE=1)"
-  in_container "" "NCCL_IB_DISABLE=1 $TORCHRUN scripts/checks/nccl_bw.py" 2>&1 | grep -E "^\[nccl\]|NET/|Using network|rror|Traceback|failed" | head -40
+  in_container "" "NCCL_IB_DISABLE=1 $TORCHRUN scripts/checks/nccl_bw.py" 2>&1 | sed -E "s/^[^ ]+ \[[0-9]+\] NCCL INFO //" | grep -E "^\[nccl\]|Using network|NET/IB|rror|Traceback|failed" | sort | uniq -c
   if [ -n "$IB_BIND" ]; then
     echo "### NCCL preflight: InfiniBand (host verbs libraries bound)"
-    in_container "$IB_BIND" "$SETLIB $TORCHRUN scripts/checks/nccl_bw.py" 2>&1 | grep -E "^\[nccl\]|NET/|Using network|IB|rror|Traceback|failed" | head -40
+    in_container "$IB_BIND" "$SETLIB $TORCHRUN scripts/checks/nccl_bw.py" 2>&1 | sed -E "s/^[^ ]+ \[[0-9]+\] NCCL INFO //" | grep -E "^\[nccl\]|Using network|NET/IB|rror|Traceback|failed" | sort | uniq -c
   fi
 fi
 
