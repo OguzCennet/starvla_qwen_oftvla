@@ -242,3 +242,24 @@ Per-task L1 differences (all frames): mean |d| / max |d| — A0 vs A0_seed2 0.00
 | peak memory fwd+bwd, batch 6 / micro-batch 16 (bf16 weights + grads, no optimiser) | 26.0 / 55.1 GB | 47.1 / 81.9 GB |
 Jobs: GR00T 1238639 (default), 1238731 (deterministic); PI 1238670 (default), 1238758 (deterministic).
 **Reading:** both frameworks are bitwise identical to the fork in forward, sampling and backward. With default (non-deterministic) attention-backward kernels the fork itself does not reproduce its gradients; ours lies in the same band (with 4 runs, the head rel_l2 maximum is 1.42e-4 vs 1.28e-4 for fork-vs-fork, a sampling effect, removed by the deterministic run). The PI loss at initialisation is ~3400 in both: the legacy forward cross-attends to the raw (un-normed) residual streams of the VLM layers.
+
+## ✅ M13 — Flow trainer (GR00T / PI): DeepSpeed integration and smoke runs (2026-11-06)
+**What:** `oftvla/train_flow.py` (accelerate + DeepSpeed ZeRO-2 bf16, the fork's `ds_config.yaml` byte-identical, launched with `accelerate launch` as in `run_libero_train.sh`), `oftvla/flow_data.py` (deterministic resumable global sample stream), `scripts/train_flow.sbatch` (multi-node launcher). OFT training path unchanged: 3 optimizer steps of the exact e3v5_MAS config give identical loss / grad_norm with the old commit 4b29fd5 and twice with the new code (job 1238967, step 1 loss 0.40377118811011314 / grad_norm 31.3998…).
+**Infrastructure:** h200 partition = 4 × H200 (140 GB) per node, 128 CPUs; MaxNodes 64, MaxTime 24 h. /hnvme: no byte quota, files 26.5K / 61K soft. → original layouts kept: **GR00T 2 nodes × 4 GPUs × 16, PI 4 nodes × 4 × 8** (global 128, no accumulation).
+**Infra-forced deviation (launcher only):** the container has no libibverbs; the host verbs libraries (and the mlx5 provider targets) are bound into it (`OFTVLA_HOST_IB=1`). Without them NCCL falls back to TCP sockets: NCCL preflight reduce_scatter 5.8 GB/s (sockets) vs 85 GB/s (IB, GPU Direct RDMA) on 2 nodes; GR00T 3.3 s/step vs 0.98 s/step.
+**Config-level equivalence vs the fork's own `setup_optimizer_and_scheduler` (`flow_trainer_config.py`): PASS both heads.** Groups `qwen_vl_interface` (LR 1e-5) then `action_model` (1e-4), no base group; GR00T 713 / 248 tensors (4,437,815,808 / 161,472,775 params), PI 713 / 528 (– / 3,352,072,737); AdamW fused, betas (0.9, 0.95), eps 1e-8, wd 1e-8; clip 1.0 (DeepSpeed `gradient_clipping`); `cosine_with_min_lr`, min_lr 1e-6, warmup 5000. LR factor at 0 / 5K / 10K / 30K: GR00T (80K) 0 / 1 / 0.9895 / 0.7600; PI (100K) 0 / 1 / 0.9935 / 0.8451.
+**Data order:** first 1000 samples identical for A0 / AS / MAS (md5 622c3087…), texts differ in 1000/1000; 8 × 16 and 16 × 8 read the same global stream.
+**Smoke runs (exact config, MAS, 300 steps, stopped at 150 and resumed in a new launch; jobs 1240699 GR00T, 1240700 PI, commit eff5508):**
+| | GR00T 2 × 4 × 16 | PI 4 × 4 × 8 |
+|---|---|---|
+| loss steps 1-25 → 276-300 | 1.160 → 0.433 | 3590 → 1.154 (≈ 1.17 from step ~225) |
+| grad norm (pre-clip) | 6-31 (window means), max 139 | 1.6e8 → 5.3 |
+| step time (median / mean incl. eval) | 0.975 / 1.028 s | 1.195 / 1.242 s |
+| peak memory per GPU | 56.9-64.2 GB | 55.8-61.9 GB |
+| projected 30K (incl. eval; + ~30 resume saves) | ≈ 8.6 h + ~0.2 h | ≈ 10.4 h + ~0.3 h |
+| resume state (latest only) | 64.39 GB, 21 files | 109.06 GB, 37 files |
+| model-only checkpoint (bf16) | 9.98 GB | 16.36 GB |
+| resume: step / draws / LR / indices | 150 → 151, draws 151, LR 3.0e-7 → 3.02e-7, rank-0 indices = stream (PASS all 300 steps) | same (PASS) |
+One 23 h job per run is enough. Disk for 3 + 3 runs: ≤ 3 × (64 + 30) + 3 × (109 + 49) ≈ 0.76 TB while running, 0.24 TB after (the resume state is removed at DONE).
+**PI initial loss:** fork clip = 1.0 (`yaml:64`, `ds_config gradient_clipping`). The released PI checkpoint repo (and its history) has no training logs, so the ~3400-3600 start cannot be compared with the published run; our curve drops to the GR00T-like level ≈ 1.15 within ~225 steps (warmup LR ≤ 4.5e-6 on the head).
+**Open:** the released PI run used base LR 3e-5 (fork yaml 2.5e-5). The base group is empty, but `min_lr_rate = min_lr / base LR` changes: LR factor at 30K 0.8444 (3e-5) vs 0.8451 (2.5e-5). Default kept at 2.5e-5.
