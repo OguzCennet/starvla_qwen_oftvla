@@ -262,4 +262,4 @@ Jobs: GR00T 1238639 (default), 1238731 (deterministic); PI 1238670 (default), 12
 | resume: step / draws / LR / indices | 150 → 151, draws 151, LR 3.0e-7 → 3.02e-7, rank-0 indices = stream (PASS all 300 steps) | same (PASS) |
 One 23 h job per run is enough. Disk for 3 + 3 runs: ≤ 3 × (64 + 30) + 3 × (109 + 49) ≈ 0.76 TB while running, 0.24 TB after (the resume state is removed at DONE).
 **PI initial loss:** fork clip = 1.0 (`yaml:64`, `ds_config gradient_clipping`). The released PI checkpoint repo (and its history) has no training logs, so the ~3400-3600 start cannot be compared with the published run; our curve drops to the GR00T-like level ≈ 1.15 within ~225 steps (warmup LR ≤ 4.5e-6 on the head).
-**Open:** the released PI run used base LR 3e-5 (fork yaml 2.5e-5). The base group is empty, but `min_lr_rate = min_lr / base LR` changes: LR factor at 30K 0.8444 (3e-5) vs 0.8451 (2.5e-5). Default kept at 2.5e-5.
+**Open:** the released PI run used base LR 3e-5 (fork yaml 2.5e-5). The base group is empty, but `min_lr_rate = min_lr / base LR` changes: LR factor at 30K 0.8440 (3e-5) vs 0.8451 (2.5e-5). Default kept at 2.5e-5.
