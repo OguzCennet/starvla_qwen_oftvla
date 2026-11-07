@@ -8,5 +8,5 @@ mkdir -p /hnvme/workspace/y307bd13-vgv/runs/oftvla/$NAME
 OPTS="--parsable --job-name=$NAME"
 JID=$(sbatch $OPTS "$SCRIPT" "$@"); echo "job 1: $JID"
 for i in $(seq 2 "$N"); do
-  JID=$(sbatch $OPTS --dependency=afterany:$JID "$SCRIPT" "$@"); echo "job $i: $JID"
+  JID=$(sbatch $OPTS --dependency=afterany:$JID,singleton "$SCRIPT" "$@"); echo "job $i: $JID"
 done

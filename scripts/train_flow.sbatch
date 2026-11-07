@@ -5,6 +5,7 @@
 #SBATCH --gres=gpu:h200:4
 #SBATCH --cpus-per-task=128
 #SBATCH --time=24:00:00
+#SBATCH --dependency=singleton
 #SBATCH --output=/hnvme/workspace/y307bd13-vgv/runs/oftvla/%x/slurm_%j.out
 # Multi-node GR00T / PI training (oftvla.train_flow) with accelerate + DeepSpeed ZeRO-2 bf16, as the fork launches it
 # (released PI slurm_script: srun ... accelerate launch --main_process_ip --machine_rank --num_machines).
@@ -13,6 +14,8 @@
 #   Env: OFTVLA_HOST_IB=1 binds the host's InfiniBand verbs libraries into the container (the image has none);
 #        OFTVLA_NCCL_TEST=1 runs the NCCL bandwidth preflight first (sockets, and IB if OFTVLA_HOST_IB=1).
 #        OFTVLA_SEGMENTS="150 300": run the training command once per stop step in this job (resume test).
+#   One job per run dir: --dependency=singleton (one running job per user + job name; the job name is the run dir),
+#   plus a check below that no other job of this name is running or completing; --run_dir in the extra args is refused.
 source $HOME/VLA_FT/starvla_qwen_oftvla/scripts/common.sh
 export REPO SIF BASE_VLM DATA SPLITS TEXTS RUNS PYLIBS  # used by the shell inside the container
 cd $REPO
@@ -21,11 +24,17 @@ export TEXTDIR=$TEXTS
 if [ $# -gt 0 ] && [ "$1" != "--" ]; then TEXTDIR=$1; shift; fi  # optional TEXTDIR
 [ "${1:-}" = "--" ] && shift
 export EXTRA="$*"
+if [[ " $EXTRA " =~ [[:space:]]--ru(n(_(d(ir?)?)?)?)?[[:space:]=] ]]; then  # also the argparse prefixes --ru ... --run_di
+  echo "[lock] --run_dir is not allowed in the extra args (run dir = runs/oftvla/<job name>)"; exit 1; fi
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=$((20000 + SLURM_JOB_ID % 20000))
 export NCCL_DEBUG=${NCCL_DEBUG:-INFO} NCCL_DEBUG_SUBSYS=${NCCL_DEBUG_SUBSYS:-INIT,NET}
 # NCCL picks the socket interface itself (prefers ib*); interface names differ between nodes.
 export RUN_DIR=$RUNS/$SLURM_JOB_NAME
+# yield to jobs of this name that started earlier (same start second: lower job id); two jobs starting together
+# must not both exit (if this job is not in the list, every listed job counts as busy)
+OTHER=$(squeue -h -u $USER -n "$SLURM_JOB_NAME" -t R,CG -o "%S %i" | sort -k1,1 -k2,2n | awk -v me="$SLURM_JOB_ID" '$2 == me {exit} {printf "%s ", $2}')
+if [ -n "$OTHER" ]; then echo "[lock] run dir busy: $RUN_DIR is used by job(s) $OTHER"; exit 1; fi
 echo "HEAD=$HEAD SETUP=$SETUP TEXTDIR=$TEXTDIR NODES=$SLURM_NNODES ($SLURM_JOB_NODELIST) EXTRA=$EXTRA"
 git -C $REPO rev-parse --short HEAD; git -C $REPO status --short
 md5sum $TEXTDIR/train.csv
