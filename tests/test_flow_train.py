@@ -7,7 +7,10 @@ import torch
 import torch.nn as nn
 
 from oftvla.flow_data import GlobalStream, StreamBatchSampler
-from oftvla.train_flow import build_optimizer_and_scheduler, parse_args
+import json
+import os
+
+from oftvla.train_flow import build_optimizer_and_scheduler, lost_progress, parse_args, recover_resume_swap
 
 BASE = ["--run_dir", "x", "--data_root", "x", "--train_ids", "x", "--text_csv", "x", "--setup", "MAS", "--base_vlm", "x"]
 
@@ -74,3 +77,54 @@ def test_groups_order_and_schedule():
     assert lrs[0] == [0.0, 0.0]
     assert lrs[5000] == [1e-5, 1e-4]
     assert abs(lrs[30000][0] / 1e-5 - 0.76) < 1e-9  # 80K cosine: 0.04 + 0.96 * 0.5 * (1 + cos(pi / 3))
+
+
+def _run_dir(tmp_path, resume=False, old=False, log_steps=(), ckpt=False):
+    d = tmp_path / "run"
+    d.mkdir()
+    for name, on in (("resume", resume), ("resume.old", old)):
+        if on:
+            (d / name).mkdir()
+            (d / name / "trainer_state.json").write_text(json.dumps({"from": name}))
+    if log_steps:
+        (d / "log.jsonl").write_text("".join(json.dumps({"step": s, "loss": 1.0}) + "\n" for s in log_steps))
+    if ckpt:
+        (d / "steps_10000_model.pt").write_bytes(b"x")
+    paths = {k: str(d / v) for k, v in dict(log="log.jsonl", resume="resume", resume_old="resume.old").items()}
+    return str(d), paths
+
+
+def test_recover_resume_old_and_resume(tmp_path):  # crash while deleting resume.old
+    d, p = _run_dir(tmp_path, resume=True, old=True, log_steps=[10, 20])
+    assert "deleted" in recover_resume_swap(p)
+    assert not os.path.exists(p["resume_old"])
+    assert json.load(open(os.path.join(p["resume"], "trainer_state.json"))) == {"from": "resume"}
+    assert lost_progress(p, d) is None
+
+
+def test_recover_only_resume_old(tmp_path):  # crash between the two renames
+    d, p = _run_dir(tmp_path, old=True, log_steps=[10, 20])
+    assert "renamed" in recover_resume_swap(p)
+    assert not os.path.exists(p["resume_old"])
+    assert json.load(open(os.path.join(p["resume"], "trainer_state.json"))) == {"from": "resume.old"}
+    assert lost_progress(p, d) is None
+
+
+def test_no_resume_but_logged_steps(tmp_path):
+    d, p = _run_dir(tmp_path, log_steps=[0, 10, 20])
+    assert recover_resume_swap(p) is None
+    assert "up to step 20" in lost_progress(p, d)
+
+
+def test_no_resume_but_weights(tmp_path):
+    d, p = _run_dir(tmp_path, ckpt=True)
+    assert recover_resume_swap(p) is None
+    assert "steps_10000_model.pt" in lost_progress(p, d)
+
+
+def test_fresh_run_dir_starts(tmp_path):
+    d, p = _run_dir(tmp_path)
+    assert recover_resume_swap(p) is None and lost_progress(p, d) is None
+    (tmp_path / "y").mkdir()
+    d2, p2 = _run_dir(tmp_path / "y", log_steps=[0])
+    assert lost_progress(p2, d2) is None  # a log with only step 0 is not progress

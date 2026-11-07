@@ -207,6 +207,39 @@ def compare_probes(a: dict, b: dict) -> list:
     return out
 
 
+def recover_resume_swap(paths: dict):
+    """Main process, at startup: finish an interrupted resume swap (save_resume: resume -> resume.old,
+    resume.tmp -> resume, delete resume.old). Returns a description of what was done, or None."""
+    if not os.path.isdir(paths["resume_old"]):
+        return None
+    if os.path.isdir(paths["resume"]):  # crash while deleting resume.old: resume/ is the newer complete state
+        shutil.rmtree(paths["resume_old"])
+        return "deleted leftover resume.old (resume/ present)"
+    os.replace(paths["resume_old"], paths["resume"])  # crash between the two renames: the older state is complete
+    return "renamed resume.old back to resume/ (resume/ was missing)"
+
+
+def lost_progress(paths: dict, run_dir: str):
+    """No resume/ but the run already trained (log steps > 0 or weights on disk): returns an error message
+    (starting from step 0 would silently restart the run), else None."""
+    if os.path.isdir(paths["resume"]):
+        return None
+    ckpts = sorted(f for f in os.listdir(run_dir) if f.startswith("steps_") and f.endswith("_model.pt")) \
+        if os.path.isdir(run_dir) else []
+    last = 0
+    if os.path.exists(paths["log"]):
+        for line in open(paths["log"]):
+            try:
+                last = max(last, int(json.loads(line).get("step", 0)))
+            except (ValueError, AttributeError):
+                continue
+    if last > 0 or ckpts:
+        return (f"[resume] ERROR: {run_dir} has no resume/ but the run already trained (log up to step {last}, "
+                f"weights {ckpts or 'none'}); refusing to restart from step 0. Restore the resume state or use a "
+                f"new run dir.")
+    return None
+
+
 class IndexedDataset(Dataset):
     """Adds the dataset index to each sample (for the data-order logs; the model ignores the key)."""
 
@@ -242,6 +275,14 @@ def main():
         return
     if main_proc:
         os.makedirs(run_dir, exist_ok=True)
+        fixed = recover_resume_swap(paths)
+        if fixed:
+            print(f"[resume] startup recovery: {fixed}", flush=True)
+    accelerator.wait_for_everyone()
+    err = lost_progress(paths, run_dir)  # every rank sees the same files, so all ranks exit together
+    if err:
+        accelerator.print(err)
+        raise SystemExit(1)
 
     def log(*a):
         if main_proc:
