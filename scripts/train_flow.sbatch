@@ -73,4 +73,4 @@ for STOP in ${OFTVLA_SEGMENTS:-full}; do
     echo "[disk] resume state: $(du -sb $RUN_DIR/resume | cut -f1) bytes, $(find $RUN_DIR/resume -type f | wc -l) files"
   fi
 done
-for f in $RUN_DIR/steps_*_model.pt; do [ -f $f ] && echo "[disk] $(basename $f): $(stat -c %s $f) bytes"; done
+for f in $RUN_DIR/steps_*_model.pt; do if [ -f $f ]; then echo "[disk] $(basename $f): $(stat -c %s $f) bytes"; fi; done

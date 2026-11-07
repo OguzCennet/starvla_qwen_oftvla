@@ -86,6 +86,9 @@ def parse_args(argv=None):
     p.add_argument("--max_hours", type=float, default=23.0)
     p.add_argument("--exit_after_step", type=int, default=None, help="save resume state and exit (resume test)")
     p.add_argument("--log_indices", action="store_true", help="log rank-0 sample indices every logged step")
+    p.add_argument("--resume_check", action="store_true",
+                   help="probe state right before the exit save and right after the reload, then compare "
+                        "(fixed-batch forward loss, optimizer-moment / master / weight checksums, scheduler)")
     a = p.parse_args(argv)
     for k, v in HEAD_DEFAULTS[a.head].items():
         if getattr(a, k) is None:
@@ -118,6 +121,90 @@ def build_optimizer_and_scheduler(model, args):
                               num_training_steps=args.max_train_steps,
                               scheduler_specific_kwargs={"min_lr": args.min_lr})
     return optimizer, scheduler
+
+
+def _sha(t: torch.Tensor) -> str:
+    import hashlib
+    return hashlib.sha256(t.detach().reshape(-1).contiguous().view(torch.uint8).cpu().numpy().tobytes()).hexdigest()[:16]
+
+
+def _zero_optimizer(optimizer):
+    """accelerate wrapper -> DeepSpeed ZeRO optimizer (has single_partition_of_fp32_groups) and the torch AdamW."""
+    o, zero = optimizer, None
+    for _ in range(4):
+        if hasattr(o, "single_partition_of_fp32_groups"):
+            zero = o
+        if isinstance(o, torch.optim.Optimizer) and any("exp_avg" in s for s in o.state.values()):
+            return zero, o
+        o = getattr(o, "optimizer", None)
+        if o is None:
+            break
+    raise RuntimeError("no torch optimizer with exp_avg state found under the wrapper")
+
+
+def resume_probe(unwrapped, optimizer, scheduler, ds, args, rank, world, step, draws):
+    """State fingerprint for the resume check. Uses no global RNG and no data-stream draws, so training is unchanged.
+
+    * forward-only loss on a fixed per-rank batch with fixed noise / t (own generator), head dropout off (eval),
+      computed twice (same-process repeatability)
+    * sha256 of every Adam state tensor (exp_avg, exp_avg_sq, step) and fp32 master partition on every rank,
+      of the bf16 module weights on rank 0, and the scheduler state
+    """
+    dev = next(unwrapped.parameters()).device
+    batch = [ds[(j * 7919 + rank * 104729) % len(ds)] for j in range(args.per_device_batch)]
+    R = int(getattr(unwrapped, "repeated_diffusion_steps", 1))
+    g = torch.Generator(device=dev).manual_seed(1234 + rank)
+    n = args.per_device_batch * R
+    noise = torch.randn((n, unwrapped.action_horizon, 7), generator=g, device=dev).to(torch.bfloat16)
+    t = (torch.rand((n,), generator=g, device=dev) * 0.999).to(torch.bfloat16)
+    flags = [m.training for m in unwrapped.modules()]
+    unwrapped.eval()
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        losses = [unwrapped(batch, noise=noise, t=t)["action_loss"].float().item() for _ in range(2)]
+    for m, f in zip(unwrapped.modules(), flags):
+        m.train(f)
+    zero, adam = _zero_optimizer(optimizer)
+    opt = {}
+    for gi, grp in enumerate(adam.param_groups):
+        for pi, p in enumerate(grp["params"]):
+            for k, v in adam.state[p].items():
+                if torch.is_tensor(v):
+                    opt[f"g{gi}.p{pi}.{k}"] = _sha(v)
+    # under ZeRO-1/2 the inner AdamW's params ARE the per-rank fp32 master partitions
+    master = {f"g{gi}.p{pi}": f"{p.dtype}:{_sha(p)}" for gi, grp in enumerate(adam.param_groups) for pi, p in enumerate(grp["params"])}
+    local = {"rank": rank, "loss_fixed": losses, "opt": opt, "master": master}
+    if rank == 0:
+        local["weights"] = {k: _sha(v) for k, v in unwrapped.state_dict().items()}
+    allr = [None] * world
+    dist.all_gather_object(allr, local)
+    sd = scheduler.state_dict()
+    return {"step": step, "draws": draws, "ranks": allr, "lr": scheduler.get_last_lr(),
+            "scheduler": json.loads(json.dumps(sd, default=repr))}
+
+
+def compare_probes(a: dict, b: dict) -> list:
+    out = []
+    la = [x for r in a["ranks"] for x in r["loss_fixed"]]
+    lb = [x for r in b["ranks"] for x in r["loss_fixed"]]
+    rep = max(abs(r["loss_fixed"][0] - r["loss_fixed"][1]) for r in a["ranks"] + b["ranks"])
+    d = max(abs(x - y) / max(abs(x), 1e-12) for x, y in zip(la, lb))
+    out.append(("fixed-batch loss before vs after (max rel diff over ranks)", d <= 2 ** -8, f"{d:.3e}; "
+                f"rank0 {a['ranks'][0]['loss_fixed'][0]:.6f} vs {b['ranks'][0]['loss_fixed'][0]:.6f}; "
+                f"same-process repeat max abs diff {rep:.1e}"))
+    out.append(("fixed-batch loss bitwise equal", la == lb, ""))
+    for key, name in (("opt", "Adam state (exp_avg, exp_avg_sq, step)"), ("master", "fp32 master partitions")):
+        ka = {(r["rank"], k): v for r in a["ranks"] for k, v in r[key].items()}
+        kb = {(r["rank"], k): v for r in b["ranks"] for k, v in r[key].items()}
+        diff = [k for k in ka if kb.get(k) != ka[k]]
+        out.append((f"{name} sha256, {len(ka)} tensors over {len(a['ranks'])} ranks", not diff and ka.keys() == kb.keys(),
+                    f"{len(diff)} differ {diff[:3]}"))
+    wa, wb = a["ranks"][0]["weights"], b["ranks"][0]["weights"]
+    diff = [k for k in wa if wb.get(k) != wa[k]]
+    out.append((f"bf16 module weights sha256 (rank 0), {len(wa)} tensors", not diff, f"{len(diff)} differ {diff[:3]}"))
+    out.append(("scheduler state_dict", a["scheduler"] == b["scheduler"], f"last_lr {a['lr']} vs {b['lr']}"))
+    out.append(("step / draws", (a["step"], a["draws"]) == (b["step"], b["draws"]),
+                f"{a['step']}/{a['draws']} vs {b['step']}/{b['draws']}"))
+    return out
 
 
 class IndexedDataset(Dataset):
@@ -198,6 +285,17 @@ def main():
         step, draws = st["step"], st["draws"]
         scheduler.load_state_dict(torch.load(os.path.join(paths["resume"], "scheduler.pt"), weights_only=False))
         log(f"[resume] from step {step} (draws {draws}), lr {scheduler.get_last_lr()}")
+        if args.resume_check:
+            after = resume_probe(unwrapped, optimizer, scheduler, ds, args, rank, world, step, draws)
+            if main_proc:
+                json.dump(after, open(os.path.join(run_dir, "resume_check_after.json"), "w"))
+                before = json.load(open(os.path.join(run_dir, "resume_check_before.json")))
+                res = compare_probes(before, after)
+                for name, ok, info in res:
+                    print(f"[resume_check] [{'PASS' if ok else 'FAIL'}] {name}: {info}", flush=True)
+                json.dump([{"check": n, "pass": bool(o), "info": i} for n, o, i in res],
+                          open(os.path.join(run_dir, "resume_check_result.json"), "w"), indent=1)
+            accelerator.wait_for_everyone()
     if main_proc:
         with open(os.path.join(run_dir, "args.json"), "w") as f:
             json.dump({**vars(args), "world": world, "accum": accum, "vlm_tag": vlm_tag(args.base_vlm)}, f, indent=2)
@@ -309,6 +407,12 @@ def main():
         stop_now = (args.exit_after_step is not None and step == args.exit_after_step) or \
                    ((time.time() - t_start) / 3600 > args.max_hours)
         if step < args.stop_at and (step % args.resume_every == 0 or stop_now):
+            if args.resume_check and stop_now:
+                before = resume_probe(unwrapped, optimizer, scheduler, ds, args, rank, world, step, draws)
+                if main_proc:
+                    json.dump(before, open(os.path.join(run_dir, "resume_check_before.json"), "w"))
+                    print(f"[resume_check] probe before save: step {step} rank0 fixed-batch loss "
+                          f"{before['ranks'][0]['loss_fixed']}", flush=True)
             save_resume()
         if stop_now and step < args.stop_at:
             log(f"[exit] stopping at step {step} for resubmission")
