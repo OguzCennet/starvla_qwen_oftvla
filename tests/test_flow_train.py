@@ -46,9 +46,11 @@ def test_head_defaults():
     g, p = parse_args(["--head", "gr00t"] + BASE), parse_args(["--head", "pi"] + BASE)
     assert (g.per_device_batch, g.max_train_steps) == (16, 80000)
     assert (p.per_device_batch, p.max_train_steps) == (8, 100000)
+    assert (g.lr_base, p.lr_base) == (2.5e-5, 3e-5)  # fork yaml / released PI run
+    assert parse_args(["--head", "pi", "--lr_base", "2.5e-5"] + BASE).lr_base == 2.5e-5
     for a in (g, p):
         assert (a.global_batch, a.stop_at, a.warmup_steps) == (128, 30000, 5000)
-        assert (a.lr_base, a.lr_vlm, a.lr_head, a.min_lr) == (2.5e-5, 1e-5, 1e-4, 1e-6)
+        assert (a.lr_vlm, a.lr_head, a.min_lr) == (1e-5, 1e-4, 1e-6)
         assert (a.weight_decay, tuple(a.betas), a.eps) == (1e-8, (0.9, 0.95), 1e-8)
         assert a.save_steps == [10000, 20000, 30000]
 

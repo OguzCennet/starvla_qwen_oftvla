@@ -9,7 +9,7 @@ Accelerator(DeepSpeedPlugin()), accelerate launch, ZeRO-2 bf16  | same; configs/
   (train_starvla.py:50-51; deepspeed_zero2.yaml; ds_config.yaml) |
 global batch = per_device x GPUs x 1 (ds_config accumulation 1)| GR00T 16 x 8 GPUs, PI 8 x 16 GPUs = 128
 param groups qwen_vl_interface 1e-5, action_model 1e-4,        | same groups (names kept), same order
-  base 2.5e-5 (trainer_tools.py:92-148; yaml:50-53)             |
+  base 2.5e-5 (trainer_tools.py:92-148; yaml:50-53)             |   base: GR00T 2.5e-5 (yaml), PI 3e-5 (released run)
 AdamW fused, betas (0.9,0.95), eps 1e-8, wd 1e-8 (:101-111)     | same
 cosine_with_min_lr, min_lr 1e-6, warmup 5000 (:117-125)         | same; total steps GR00T 80K / PI 100K, stop 30K
 scheduler stepped only on sync (:431-436)                       | same
@@ -49,8 +49,8 @@ from oftvla.vlm import vlm_tag
 # fork LR-config keys -> our module attributes (fork: Qwen_GR00T/Qwen_PI.qwen_vl_interface / .action_model)
 LR_GROUP_MODULES = {"qwen_vl_interface": "vlm", "action_model": "action_head"}
 HEAD_DEFAULTS = {  # spec §11.2 / §12.2
-    "gr00t": {"per_device_batch": 16, "max_train_steps": 80000},  # run_libero_train.sh:44, :47
-    "pi": {"per_device_batch": 8, "max_train_steps": 100000},  # released PI run (slurm_script, config.yaml)
+    "gr00t": {"per_device_batch": 16, "max_train_steps": 80000, "lr_base": 2.5e-5},  # run_libero_train.sh:44, :47; yaml
+    "pi": {"per_device_batch": 8, "max_train_steps": 100000, "lr_base": 3e-5},  # released PI run (slurm_script, config.yaml)
 }
 GB = 2 ** 30
 
@@ -71,7 +71,7 @@ def parse_args(argv=None):
     p.add_argument("--max_train_steps", type=int, default=None, help="length of the cosine schedule")
     p.add_argument("--stop_at", type=int, default=30000, help="training stops here (decision 11.2)")
     p.add_argument("--warmup_steps", type=int, default=5000)
-    p.add_argument("--lr_base", type=float, default=2.5e-5)
+    p.add_argument("--lr_base", type=float, default=None, help="GR00T 2.5e-5, PI 3e-5 (HEAD_DEFAULTS)")
     p.add_argument("--lr_vlm", type=float, default=1e-5)
     p.add_argument("--lr_head", type=float, default=1e-4)
     p.add_argument("--min_lr", type=float, default=1e-6)
