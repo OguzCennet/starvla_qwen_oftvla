@@ -15,7 +15,7 @@ import numpy as np
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("summaries", nargs="+")
+    ap.add_argument("summaries", nargs="*")
     ap.add_argument("--same", nargs=2, action="append", default=[], metavar=("A", "B"))
     a = ap.parse_args()
     ok = True
