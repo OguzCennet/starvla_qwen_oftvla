@@ -308,3 +308,22 @@ The slurm_script also exports `lr=5e-5`, `qwen_vl_interface_lr=2e-5`, `action_mo
 * Plan: step 30000 of each run as soon as it is DONE; 10K / 20K afterwards.
 **Sharding test (bitwise):** first 640 frames (10 batches) of the 10K checkpoints, unsharded job vs 3 shard jobs + CPU merge via `submit_flow_eval.sh` (`--check`): pred, gt and frames.csv bitwise identical for GR00T A0 (unsharded 1264602, shards 1264603–1264605, merge 1264611) and PI A0 (unsharded 1264606 on h24-24, shards 1264607–1264609 on h24-05 / h24-14, merge 1264612); predict_action max|diff| 0 in every shard; noise md5 identical. Further validation on real 10K checkpoints (200 frames, `--check`): GR00T A0 and PI AS max|diff| 0, noise md5 c62eb54e8731 as for all other runs. All test outputs are in `runs/oftvla/eval_tests/<run>_step<STEP>/`; none of the six runs has a heldout_eval/ yet. Refusal of a partial frame set into RUN/heldout_eval/ tested for eval and merge mode (exit before any write).
 **Projected wall time per checkpoint (excluding queue wait):** PI 16 shards × ~11,700 frames × 0.30 s ≈ 1.0 h per shard (+ ~1 min model load), ~16 GPU-h; GR00T 4 shards × ~46,700 frames × 0.035 s ≈ 0.45 h per shard, ~1.9 GPU-h. Shard `--time`: PI 2:30, GR00T 1:30. All 18 checkpoints: ~150 GPU-h. h200 was full during the test (the PI shards waited ~75 min).
+**Results at step 30000 (2026-11-08)**, all six runs, 186,874 frames each, noise md5 8bc407aa2d1e (identical in all six). Evals submitted as each run finished (`submit_flow_eval.sh`); PI shards ~1.0–1.2 h, GR00T ~0.47 h. PI AS shard 0 (job 1268028) hit its 2.5 h limit on h24-14 at 93 % GPU utilisation while its 15 siblings took ~1.1 h (another shard on the same node was normal): resubmitted with `--exclude=h24-14` (1269269, 1:07 on h24-01) and a new merge (1269270); bitwise reproducibility of shards makes the rerun equivalent.
+| run | l1_meanK (primary) | l1_s0 | l1_bestK | spread | grip_s0 | grip_meanK |
+|---|---|---|---|---|---|---|
+| gr00t A0 | 0.1222 | 0.1229 | 0.1143 | 0.0144 | 0.9404 | 0.9415 |
+| gr00t AS | 0.1207 | 0.1213 | 0.1134 | 0.0129 | 0.9412 | 0.9420 |
+| gr00t MAS | **0.1189** | 0.1195 | 0.1122 | 0.0131 | 0.9439 | 0.9450 |
+| pi A0 | 0.1317 | 0.1336 | 0.1258 | 0.0268 | 0.9377 | 0.9410 |
+| pi AS | 0.1289 | 0.1303 | 0.1242 | 0.0211 | 0.9365 | 0.9380 |
+| pi MAS | **0.1228** | 0.1240 | 0.1180 | 0.0199 | 0.9448 | 0.9464 |
+Paired per task (24 held-out tasks, per-task means, Wilcoxon signed-rank; uncorrected), within head:
+| head | contrast | Δ l1_meanK (tasks lower) p | Δ l1_s0 p | Δ grip_meanK (tasks higher) p |
+|---|---|---|---|---|
+| GR00T | AS − A0 | −0.0014 (16/24) 0.11 | −0.0015 0.095 | +0.0007 0.24 |
+| GR00T | MAS − A0 | −0.0035 (19/24) 0.0053 | −0.0036 0.0039 | +0.0035 (18/24) 0.023 |
+| GR00T | MAS − AS | −0.0021 (16/24) 0.029 | −0.0020 0.025 | +0.0028 0.20 |
+| PI | AS − A0 | −0.0020 (15/24) 0.11 | −0.0025 0.084 | −0.0025 0.36 |
+| PI | MAS − A0 | −0.0097 (20/24) 2.0e-5 | −0.0104 1.3e-5 | +0.0049 (21/24) 0.0047 |
+| PI | MAS − AS | −0.0077 (20/24) 1.3e-4 | −0.0079 1.1e-4 | +0.0074 (21/24) 0.0013 |
+Reading: in both heads MAS has the lowest held-out error on the primary metric and the best gripper agreement, consistently across tasks (GR00T −2.9 %, PI −7.4 % vs A0); AS is not distinguishable from A0. Not yet done: spread near step changes (gold_test.csv join), checkpoints 10K / 20K.
