@@ -10,8 +10,12 @@ DONE at the first frame (at or after the previous step's done frame) where, for 
   carry    held and inside / above the destination of the object's goal atom: site region = within the site box
            world-axis footprint (rotated box projected, ext = abs(R) size) and above its bottom; object = within the destination's horizontal radius and
            above its body
-  put      the object's LIBERO goal predicate is true and no robot body touches the object
+  put      the object's LIBERO goal predicate is true and no robot body touches the object, OR the episode is
+           successful at that frame (rollouts and demos end at success, often with the gripper still on it)
   operate  the part's goal predicate (the task's open / close / turnon / turnoff atom) is true
+
+Stacks (L90T65 "the stacked bowls"): for steps whose label names "stacked", held = a left finger on some object and a right finger on some object of
+the stack (the target plus every x with an 'on x target' goal atom); the lift is measured on the target.
 
 Episode log: done flag and first frame per step, furthest step reached (number of consecutive done steps),
 first object grasped (name, frame, correct = the first grasp step's object), steps used, success.
@@ -54,6 +58,9 @@ class WorldObserver(SimObserver):
         unary = [i for i, a in enumerate(self.atoms) if a[0].lower() in UNARY]
         assert len(unary) <= 1 and (unary or not self.part_objs), self.atoms
         self.part_atom = unary[0] if unary else None
+        # stacks: target -> objects with an 'on x target' goal atom (L90T65: right bowl on the left bowl)
+        self.stack_of = {o: [a[1] for a in self.atoms if a[0].lower() == "on" and len(a) == 3 and a[2] == o]
+                         for o in objs}
         sim = self.sim
         self.dest = {}
         for o, i in self.atom_of.items():
@@ -80,11 +87,15 @@ class WorldObserver(SimObserver):
         return bool(np.linalg.norm(p[:2] - q[:2]) <= x and p[2] >= q[2])
 
     def world(self):
-        """Call after observe(): {atoms, goal_obj, part_goal, dest, held} of the same frame."""
+        """Call after observe(): {atoms, goal_obj, part_goal, dest, held, held_stack} of the same frame."""
         vals = [bool(self.inner._eval_predicate(a)) for a in self.atoms]
         return dict(atoms=vals, goal_obj={o: vals[i] for o, i in self.atom_of.items()},
                     part_goal={p: vals[self.part_atom] for p in self.part_objs},
-                    dest={o: self._in_dest(o) for o in self.atom_of}, held=dict(self.held))
+                    dest={o: self._in_dest(o) for o in self.atom_of}, held=dict(self.held),
+                    # a left finger on some object of the stack and a right finger on some object of the stack
+                    # (L90T65: the fingers pinch the two nested rims, one finger on each bowl)
+                    held_stack={o: any(self.left_on[x] for x in [o, *xs]) and any(self.right_on[x] for x in [o, *xs])
+                                for o, xs in self.stack_of.items()})
 
 
 class Scorer:
@@ -92,11 +103,14 @@ class Scorer:
 
     def __init__(self, blocks, parts):
         self.steps = [(step_type(b, parts), b["obj"]) for b in blocks]
+        # steps on a stack (label names "stacked"): held = both fingers on any object of the stack
+        self.held_key = ["held_stack" if "stacked" in (b.get("label") or "") else "held" for b in blocks]
         self.h = {}                      # feature -> {name: [per frame]}
         self.n = 0
 
     def observe(self, contacts, z, dists, world):
         for key, d in (("contacts", contacts), ("z", z), ("dists", dists), ("held", world["held"]),
+                       ("held_stack", world.get("held_stack", {})),
                        ("goal_obj", world["goal_obj"]), ("part_goal", world["part_goal"]), ("dest", world["dest"])):
             for k, v in d.items():
                 self.h.setdefault(key, {}).setdefault(k, []).append(v)
@@ -106,9 +120,9 @@ class Scorer:
     def _a(self, key, name, dtype=bool):
         return np.asarray(self.h[key][name], dtype=dtype)
 
-    def grasp_onsets(self, o, start=0):
-        """L rule on the both-fingers hold, onsets >= start (first only)."""
-        held = self._a("held", o)
+    def grasp_onsets(self, o, start=0, key="held"):
+        """L rule on the both-fingers hold (key: held / held_stack), lift of o itself; first onset >= start."""
+        held = self._a(key, o)
         z = self._a("z", o, float)
         for ep in contact_episodes(held, CONTACT_GAP):
             if ep[1] < start:
@@ -118,27 +132,27 @@ class Scorer:
                 return t
         return None
 
-    def cond(self, typ, o):
+    def cond(self, typ, o, key="held"):
         if typ == "reach":
             return self._a("contacts", o) | (self._a("dists", o, float) <= REACH_M)
         if typ == "carry":
-            return self._a("held", o) & self._a("dest", o)
+            return self._a(key, o) & self._a("dest", o)
         if typ == "put":
-            return self._a("goal_obj", o) & ~self._a("contacts", o)
+            return (self._a("goal_obj", o) & ~self._a("contacts", o)) | self._a("success", "all")
         if typ == "operate":
             return self._a("part_goal", o)
         raise ValueError(typ)
 
     def result(self):
         done, prev = [], 0
-        for typ, o in self.steps:
+        for (typ, o), key in zip(self.steps, self.held_key):
             if prev is None:
                 done.append(None)
                 continue
             if typ == "grasp":
-                t = self.grasp_onsets(o, prev)
+                t = self.grasp_onsets(o, prev, key)
             else:
-                hit = np.nonzero(self.cond(typ, o)[prev:])[0]
+                hit = np.nonzero(self.cond(typ, o, key)[prev:])[0]
                 t = int(prev + hit[0]) if len(hit) else None
             done.append(t)
             prev = t

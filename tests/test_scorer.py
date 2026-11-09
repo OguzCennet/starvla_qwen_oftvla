@@ -26,8 +26,10 @@ def run(blocks, f, parts=()):
     sc = Scorer(blocks, set(parts))
     for t in range(f["T"]):
         pick = lambda d: {k: v[t] for k, v in d.items()}
-        world = dict(held=pick(f["held"]), goal_obj=pick(f["goal"]), part_goal=pick(f["part"]), dest=pick(f["dest"]),
-                     atoms=[bool(v[t]) for v in list(f["goal"].values()) + list(f["part"].values())])
+        world = dict(held=pick(f["held"]), held_stack=pick(f.get("held_stack", {})), goal_obj=pick(f["goal"]),
+                     part_goal=pick(f["part"]), dest=pick(f["dest"]),
+                     atoms=[bool(v[t]) for v in list(f["goal"].values()) + list(f["part"].values())
+                            + list(f.get("other_atoms", {}).values())])
         sc.observe(pick(f["c"]), pick(f["z"]), pick(f["d"]), world)
     return sc.result()
 
@@ -39,9 +41,29 @@ def test_pick_place_all_done_in_order():
     assert r["first_grasp"] == dict(obj=OBJ, frame=20, correct=True) and r["success"] == 1 and r["success_frame"] == 48
 
 
-def test_put_needs_release_and_steps_are_sequential():
-    r = run(PICK_PLACE, feats(goal=40, touch=(12, 55)))   # goal true while still touched: put waits for release
-    assert r["done"][3] == 56
+def test_stacked_grasp_uses_any_bowl_of_the_stack():
+    """'the stacked bowls': fingers on the top bowl (OTHER) lift the target bowl (OBJ) -> grasp done."""
+    f = feats()
+    f["held_stack"] = {OBJ: f["held"][OBJ]}          # fingers on the stack, target bowl rises
+    f["held"] = {OBJ: np.zeros(80, bool), OTHER: f["held"][OBJ]}
+    blocks = [dict(kind="lift", obj=OBJ, label="pick up the stacked bowls"),
+              dict(kind="open_cmd", obj=OBJ, label="move the stacked bowls to the tray")]
+    r = run(blocks, f)
+    assert r["done"] == [20, 35]
+    blocks = [dict(b, label="pick up the bowl") for b in blocks]   # without 'stacked': own fingers only
+    assert run(blocks, f)["done"] == [None, None]
+
+
+def test_put_needs_release_or_success_and_steps_are_sequential():
+    f = feats(goal=40, touch=(12, 55))                    # goal true while still touched
+    other = np.zeros(80, bool)
+    f["other_atoms"] = {"x": other}                       # a second goal atom keeps the episode unsuccessful
+    assert run(PICK_PLACE, f)["done"][3] == 56            # -> put waits for the release
+    other[50:] = True                                     # episode success at 50, gripper still on the object
+    r = run(PICK_PLACE, f)
+    assert r["done"][3] == 50 and r["success_frame"] == 50
+    r = run(PICK_PLACE, feats(goal=40, touch=(12, 55)))   # the object's goal is the whole task: success at 40
+    assert r["done"][3] == 40
     r = run(PICK_PLACE, feats(hold=(12, 18)))              # dropped before the lift: no grasp, nothing after it
     assert r["done"][1:] == [None, None, None] and r["furthest"] == 1 and r["first_grasp"] is None
 

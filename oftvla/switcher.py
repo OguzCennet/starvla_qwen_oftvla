@@ -256,6 +256,7 @@ class SimObserver:
                 if other in bodies:
                     contacts[k] = True
         self.held = {k: left[k] and right[k] for k in self.objs}
+        self.left_on, self.right_on = left, right
         z = {k: float(sim.data.body_xpos[b][2]) for k, (b, _) in self.objs.items()}
         p = np.asarray(sim.data.site_xpos[self.site])
         dists = {}
