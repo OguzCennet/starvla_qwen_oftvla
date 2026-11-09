@@ -37,7 +37,8 @@ def run(blocks, tr, guard_m=0.05):
     per_frame = []
     for f in range(T):
         sw.observe({k: bool(v[f]) for k, v in tr["contacts"].items()}, {k: float(v[f]) for k, v in tr["z"].items()},
-                   {k: float(v[f]) for k, v in tr["dists"].items()})
+                   {k: float(v[f]) for k, v in tr["dists"].items()},
+                   {k: bool(v[f]) for k, v in tr.get("goals", {}).items()})
         per_frame.append(sw.block())
         sw.act(tr["grip"][f])
     return sw, per_frame
@@ -134,20 +135,46 @@ def test_part_events_first_touch_and_first_episode_end():
     assert sw.switch_frames == [13] and [e[3] for e in sw.events] == [10, 19]
 
 
-def test_close_or_touch_takes_the_earlier():
-    T = 40
+def test_close_or_touch_option1():
+    """Close before / during the first contact counts at once; without a close the touch, confirmed at the
+    contact end (switch frame = contact end + 3, not touch + 3)."""
+    T = 50
     c = np.zeros(T, bool)
     c[15:30] = True
-    grip = np.full(T, -1.0)
-    grip[20:] = 1.0                               # touch at 15 before the close at 20
     blocks = [dict(kind="close_or_touch", obj=PART, guard_obj=PART, text="reach"),
               dict(kind="last_contact", obj=PART, text="turn")]
-    sw, _ = run(blocks, dict(contacts={PART: c}, z={}, dists={PART: np.zeros(T)}, grip=grip))
-    assert sw.events[0][3] == 15
-    grip[:] = -1.0
+    tr = lambda grip: dict(contacts={PART: c}, z={}, dists={PART: np.zeros(T)}, grip=grip)
+    grip = np.full(T, -1.0)
+    grip[20:] = 1.0                               # touch at 15, close at 20 inside the contact: the close
+    sw, _ = run(blocks, tr(grip))
+    assert sw.events[0][3:] == (20, 20) and sw.switch_frames == [23]
+    grip = np.full(T, -1.0)
     grip[12:] = 1.0                               # close at 12 before the touch
-    sw, _ = run(blocks, dict(contacts={PART: c}, z={}, dists={PART: np.zeros(T)}, grip=grip))
-    assert sw.events[0][3] == 12
+    sw, _ = run(blocks, tr(grip))
+    assert sw.events[0][3] == 12 and sw.switch_frames == [15]
+    grip = np.full(T, -1.0)                       # push: never closed -> the touch, confirmed at 29 + 3
+    sw, _ = run(blocks, tr(grip))
+    assert sw.events[0][3:] == (15, 32) and sw.switch_frames == [32]
+
+
+def test_part_end_option2b():
+    """Operate end = end of the contact in progress when the part's goal first holds; a re-grasp before the goal
+    does not end the step; goal reached after the release -> the last contact before it."""
+    T = 80
+    c = np.zeros(T, bool)
+    c[10:20] = True
+    c[30:45] = True
+    goal = np.zeros(T, bool)
+    goal[38:] = True                              # goal holds during the second contact
+    blocks = [dict(kind="last_contact", obj=PART, text="open"), dict(kind="close_cmd", obj=OBJ, guard_obj=OBJ, text="reach")]
+    tr = dict(contacts={PART: c, OBJ: np.zeros(T, bool)}, z={OBJ: np.full(T, 0.9)}, dists={OBJ: np.zeros(T)},
+              grip=np.full(T, -1.0), goals={PART: goal})
+    sw, per_frame = run(blocks, tr)
+    assert sw.events[0][3:] == (44, 47) and sw.switch_frames == [47] and per_frame[46] == 0 and per_frame[47] == 1
+    goal[:] = False
+    goal[50:] = True                              # goal only after the release (part keeps moving)
+    sw, _ = run(blocks, tr)
+    assert sw.events[0][3:] == (44, 50) and sw.switch_frames == [50]
 
 
 def test_text_block_clipped_for_trailing_blocks_without_text():

@@ -56,6 +56,32 @@ def table(rows, title):
     return overall
 
 
+def scorer_table(rows):
+    """Scorer validation: per MAS step type, share marked done and median offset done - offline switch out of the
+    step (v1 frames; steps without an offline boundary: done share only)."""
+    if not rows or "score" not in rows[0]:
+        return
+    by = collections.defaultdict(list)
+    fg, succ = collections.Counter(), 0
+    for r in rows:
+        sc = json.loads(r["score"])
+        succ += sc["success"]
+        fg["none" if sc["first_grasp"] is None else ("correct" if sc["first_grasp"]["correct"] else "wrong")] += 1
+        for m in json.loads(r["score_match"]):
+            by[m["type"]].append(m)
+    print(f"\n### scorer ({len(rows)} demos): success (all goal atoms true) {succ}/{len(rows)}; first grasp {dict(fg)}")
+    print("| step type | steps | done | median offset (done - offline switch out of the step) | n with boundary | within ±3 |")
+    print("|---|---|---|---|---|---|")
+    for k in ("reach", "grasp", "carry", "put", "operate"):
+        v = by.get(k, [])
+        if not v:
+            continue
+        done = [m for m in v if m["done"] is not None]
+        offs = [m["done_t"] - m["off_t"] for m in done if m["off_t"] is not None]
+        print(f"| {k} | {len(v)} | {100 * len(done) / len(v):.1f} % | {statistics.median(offs) if offs else '-'} | {len(offs)} | "
+              f"{(f'{100 * sum(abs(x) <= 3 for x in offs) / len(offs):.1f} %') if offs else '-'} |")
+
+
 def main():
     for path in sys.argv[1:]:
         rows = list(csv.DictReader(open(path, newline="")))
@@ -65,6 +91,7 @@ def main():
         if rc:
             print(f"record() contact/height check on the first demo of each task: {dict(rc)}")
         table(rows, "all demos")
+        scorer_table(rows)
         if mode == "actions":
             ok = [r for r in rows if r["success"] == "1"]
             print(f"\naction replay succeeds in {len(ok)}/{len(rows)} demos = {100 * len(ok) / len(rows):.1f} %")

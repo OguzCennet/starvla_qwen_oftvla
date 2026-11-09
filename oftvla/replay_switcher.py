@@ -24,7 +24,8 @@ import time
 
 import numpy as np
 
-from oftvla.switcher import Switcher, SimObserver, first_lifts
+from oftvla.scorer import Scorer, WorldObserver
+from oftvla.switcher import Switcher, first_lifts
 
 RAW = {"libero_90": "/hnvme/workspace/y307bd13-vgv/data/libero_raw/libero_90",
        "libero_10": "/hnvme/workspace/y307bd13-vgv/data/libero_raw/libero_10"}
@@ -83,7 +84,8 @@ def replay_task(job):
             load_recorded_model(env, xml.decode() if isinstance(xml, bytes) else xml)
             env.set_init_state(states[0])
             sim = env.env.sim      # env.reset() may rebuild the sim
-            obs = SimObserver(sim, guards)
+            obs = WorldObserver(env, spec["MAS"], guards)
+            scorer = Scorer(spec["MAS"], parts)
             for s in SETUPS:
                 for b in spec[s]:
                     b["is_part"] = b["obj"] in parts
@@ -96,12 +98,14 @@ def replay_task(job):
                     sim.set_state_from_flattened(states[f])
                     sim.forward()
                 c, z, d = obs.observe()
+                world = obs.world()
+                scorer.observe(c, z, d, world)
                 for k, v in c.items():
                     hist["c_" + k].append(v)
                 for k, v in z.items():
                     hist["z_" + k].append(v)
                 for sw in sws.values():
-                    sw.observe(c, z, d)
+                    sw.observe(c, z, d, world["part_goal"])
                     sw.act(actions[f][-1])
                 if mode == "actions":
                     _, _, done, _ = env.step(actions[f].tolist())
@@ -131,6 +135,18 @@ def replay_task(job):
                 row[f"{s}_ignored"] = json.dumps(sw.ignored)
                 row[f"{s}_noguard_switches"] = json.dumps(sw0.switch_frames)
                 row[f"{s}_guard_changed"] = int(sw.switch_frames != sw0.switch_frames)
+            # scorer: done frame of MAS step j vs the offline switch out of it (into j + 1), v1 frames
+            sc = scorer.result()
+            ra = np.asarray(raws)
+            off = dict(offline_switches(rows, "MAS"))
+            cmp_ = []
+            for j, (typ, d) in enumerate(zip(sc["types"], sc["done"])):
+                b = off.get(j + 1)
+                cmp_.append(dict(j=j, type=typ, done=d, off_raw=b,
+                                 off_t=None if b is None else int(np.searchsorted(ra, b)),
+                                 done_t=None if d is None else int(np.searchsorted(ra, d))))
+            row["score"] = json.dumps(sc)
+            row["score_match"] = json.dumps(cmp_)
             out.append(row)
     env.close()
     print(f"[task] {spec['task_id']} {len(demos)} demos done", flush=True)

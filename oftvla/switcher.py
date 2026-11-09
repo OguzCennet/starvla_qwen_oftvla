@@ -7,14 +7,18 @@ computed with the SAME functions on the history seen so far (past and current st
   kind            offline (step1)                                  causal here
   close_cmd       rule B: last close before the next lift onset    first close command at/after `after`
   open_cmd        last open in the carry (apply_dict_v2 split)     first open command at/after `after`
-  close_or_touch  first close in the first contact episode, else   first of (close command, first touch)
-                  the touch
+  close_or_touch  first close in the first contact episode, else   same (M15 option 1): a close before / during
+                  the touch                                        the first contact counts at once; if that
+                                                                   contact ends without a close, the touch,
+                                                                   confirmed at the contact end (+ 3)
   first_touch     first robot contact                              same (immediate)
   lift            lift_onset (z > rest + 5 mm for HOLD=3 steps,    same; confirmed at onset + 2
                   gripper closed 3 steps before)
-  last_contact    end of the first contact episode ending at/after same for objects; for parts rule A (merge
-                  `after` (gaps <= 2 merged); parts: rule A         episodes up to the next event) is dropped;
-                                                                    confirmed after 3 steps without contact
+  last_contact    end of the first contact episode ending at/after same for objects, confirmed after 3 steps
+                  `after` (gaps <= 2 merged); parts: rule A         without contact. Parts (M15 option 2b): end of
+                  (merge episodes up to the next event)             the contact in progress when the part's goal
+                                                                    predicate first holds (or of the last contact
+                                                                    before it, if released already)
 Guard (M15 decision 2): a close / open command counts only if the gripper is within GUARD_M of the block's guard
 object at that step (distance to the object's geoms, bounding spheres); ignored commands are logged.
 
@@ -56,19 +60,20 @@ class Switcher:
         self.k = 0                     # current block
         self.after = 0                 # events of block k are searched at/after this frame
         self.f = -1                    # last observed frame
-        self.contacts, self.z, self.dists, self.grip = {}, {}, {}, []
+        self.contacts, self.z, self.dists, self.goals, self.grip = {}, {}, {}, {}, []
         self.switch_frames = []        # frame at which block i+1 starts (= event_i + 3)
         self.events = []               # (block, kind, obj, event frame, confirm frame)
         self.ignored = []              # (block, kind, frame, guard obj, distance) commands rejected by the guard
         self._ignored_seen = set()
 
     # ---------------------------------------------------------------- inputs
-    def observe(self, contacts, z, dists):
+    def observe(self, contacts, z, dists, goals=None):
         """State of frame f = self.f + 1 (before its action). contacts: {name: bool} for objects and parts,
-        z: {object: height}, dists: {guard object: gripper distance in m}."""
+        z: {object: height}, dists: {guard object: gripper distance in m}, goals: {part: goal predicate true}
+        (parts operated by a last_contact block; required for them)."""
         self.f += 1
         assert len(self.grip) == self.f, "act() must be called once per frame, after observe()"
-        for d, src in ((self.contacts, contacts), (self.z, z), (self.dists, dists)):
+        for d, src in ((self.contacts, contacts), (self.z, z), (self.dists, dists), (self.goals, goals or {})):
             for k, v in src.items():
                 d.setdefault(k, []).append(v)
         self._advance()
@@ -89,15 +94,16 @@ class Switcher:
     def _arr(self, d, name, dtype=float):
         return np.asarray(d[name], dtype=dtype)
 
-    def _command(self, b, i):
-        """First guarded command of the block's kind at/after `after` in the gripper history (None if none)."""
+    def _command(self, b, i, until=None):
+        """First guarded command of the block's kind in [after, until] of the gripper history (None if none).
+        close_or_touch uses close commands."""
         sign = COMMANDS[b["kind"]] if b["kind"] in COMMANDS else 1
         grip = np.asarray(self.grip)
         if len(grip) < 2:
             return None
         guard = b.get("guard_obj")
         for t in switches(grip, sign):
-            if t < self.after:
+            if t < self.after or (until is not None and t > until):
                 continue
             d = self.dists[guard][t] if guard else 0.0
             if d <= self.guard_m:
@@ -106,6 +112,24 @@ class Switcher:
                 self._ignored_seen.add((i, t))
                 self.ignored.append((i, b["kind"], t, guard, round(float(d), 4)))
         return None
+
+    def _part_end(self, obj, c, eps):
+        """Option 2b: end of the contact in progress when the part's goal predicate first holds (at/after
+        `after`); if the part is not touched then, the end of the last contact before it. -> (event, confirm)."""
+        g = next((t for t, v in enumerate(self.goals[obj]) if v and t >= self.after), None)
+        if g is None:
+            return None
+        cur = next((ep for ep in eps if ep[0] <= g <= ep[1]), None)
+        if cur is None:                       # g inside a merged gap counts as in contact
+            cur = next((ep for ep in eps if ep[0] <= g <= ep[1] + CONTACT_GAP), None)
+        if cur is not None:
+            e = cur[1]
+            return (e, e + CONTACT_GAP + 1) if self.f - e >= CONTACT_GAP + 1 else None
+        before = [ep for ep in eps if ep[1] < g]
+        if before:
+            e = before[-1][1]
+            return e, max(e + CONTACT_GAP + 1, g)
+        return None                           # goal true before any contact at/after `after`: wait
 
     def _episodes(self, obj):
         c = self._arr(self.contacts, obj, bool)
@@ -124,9 +148,17 @@ class Switcher:
         if kind == "first_touch":
             return (max(eps[0][0], self.after),) * 2 if eps else None
         if kind == "close_or_touch":
-            cands = [x for x in (self._command(b, i), max(eps[0][0], self.after) if eps else None) if x is not None]
-            return (min(cands),) * 2 if cands else None
+            if eps and f - eps[0][1] >= CONTACT_GAP + 1:      # first contact over: close inside it, else touch
+                t = self._command(b, i, until=eps[0][1])
+                if t is not None:
+                    return t, t
+                e = eps[0][1]
+                return max(eps[0][0], self.after), e + CONTACT_GAP + 1
+            t = self._command(b, i)                            # a close before / during the contact: at once
+            return (t, t) if t is not None else None
         if kind == "last_contact":
+            if obj in self.goals:
+                return self._part_end(obj, c, eps)
             if not eps:
                 return None
             e = eps[0][1]
@@ -151,7 +183,8 @@ class Switcher:
             b = self.blocks[self.k]
             self.events.append((self.k, b["kind"], b.get("obj"), int(t), int(conf)))
             if self.k < len(self.blocks) - 1:
-                self.switch_frames.append(int(t) + SWITCH_DELAY)
+                # event + 3 as offline; later only if the event is confirmed after that (touch fallback, 2b)
+                self.switch_frames.append(max(int(t) + SWITCH_DELAY, int(conf)))
             self.after = int(t) + 1
             self.k += 1
 
@@ -190,6 +223,10 @@ class SimObserver:
         self.objs = S.movable_objects(sim, self.robot)
         self.parts = S.articulated_parts(sim)
         self.site = sim.model.site_name2id("gripper0_grip_site")
+        names = {b: sim.model.body_id2name(b) or "" for b in range(sim.model.nbody)}
+        self.left_finger = {b for b, n in names.items() if n in ("gripper0_leftfinger", "gripper0_finger_joint1_tip")}
+        self.right_finger = {b for b, n in names.items() if n in ("gripper0_rightfinger", "gripper0_finger_joint2_tip")}
+        assert len(self.left_finger) == 2 and len(self.right_finger) == 2, "Panda finger bodies not found"
         bodies = {**{k: v[1] for k, v in self.objs.items()}, **{k: v[1] for k, v in self.parts.items()}}
         missing = [o for o in guard_objs if o not in bodies]
         assert not missing, f"guard objects not in the scene: {missing}"
@@ -197,21 +234,28 @@ class SimObserver:
                             for o in guard_objs}
 
     def observe(self):
+        """-> (contacts, z, dists); also sets self.held = {object: touched by a left AND a right finger body}
+        (world state, used by the scorer only)."""
         sim = self.sim
         contacts = {k: False for k in (*self.objs, *self.parts)}
+        left = {k: False for k in self.objs}
+        right = {k: False for k in self.objs}
         for i in range(sim.data.ncon):
             con = sim.data.contact[i]
             b1 = int(sim.model.geom_bodyid[con.geom1])
             b2 = int(sim.model.geom_bodyid[con.geom2])
             if (b1 in self.robot) == (b2 in self.robot):
                 continue
-            other = b2 if b1 in self.robot else b1
+            other, mine = (b2, b1) if b1 in self.robot else (b1, b2)
             for k, (_, bodies) in self.objs.items():
                 if other in bodies:
                     contacts[k] = True
+                    left[k] |= mine in self.left_finger
+                    right[k] |= mine in self.right_finger
             for k, (_, bodies) in self.parts.items():
                 if other in bodies:
                     contacts[k] = True
+        self.held = {k: left[k] and right[k] for k in self.objs}
         z = {k: float(sim.data.body_xpos[b][2]) for k, (b, _) in self.objs.items()}
         p = np.asarray(sim.data.site_xpos[self.site])
         dists = {}
